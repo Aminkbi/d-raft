@@ -2,6 +2,7 @@ package check
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/aminkbi/d-raft/raft"
@@ -22,6 +23,23 @@ func TestViolationFingerprintValidation(t *testing.T) {
 	violation.Evidence = json.RawMessage(`{"term":5}`)
 	if err := ValidateViolation(violation); err == nil {
 		t.Fatal("tampered evidence passed validation")
+	}
+}
+
+func TestViolationSchemaVocabulary(t *testing.T) {
+	t.Parallel()
+
+	evidence := json.RawMessage(`{"index":1}`)
+	fingerprint, err := Fingerprint(SnapshotConflict, []raft.NodeID{"a"}, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	violation := Violation{ID: SnapshotConflict, Nodes: []raft.NodeID{"a"}, Evidence: evidence, Fingerprint: fingerprint}
+	if err := ValidateViolationForSchema(SchemaVersion, violation); err != nil {
+		t.Fatalf("v2 validation: %v", err)
+	}
+	if err := ValidateViolationForSchema(SchemaV1, violation); err == nil {
+		t.Fatal("snapshot violation passed checker v1 validation")
 	}
 }
 
@@ -88,6 +106,43 @@ func TestCheckerFindsCommittedConflict(t *testing.T) {
 		nodeWithLog("b", raft.HardState{CurrentTerm: 1, CommitIndex: 1}, []raft.Entry{right}),
 	))
 	if !hasViolation(violations, CommittedConflict) || !hasViolation(violations, LogMatching) {
+		t.Fatalf("violations = %+v", violations)
+	}
+}
+
+func TestCheckerFindsSnapshotConflict(t *testing.T) {
+	t.Parallel()
+
+	checker := New([]raft.NodeID{"a", "b", "c"})
+	observation := observation(
+		node("a", raft.HardState{CurrentTerm: 2, CommitIndex: 4}, nil),
+		node("b", raft.HardState{CurrentTerm: 2, CommitIndex: 4}, nil),
+	)
+	observation.Nodes[0].Durable.Snapshot = raft.Snapshot{LastIncludedIndex: 4, LastIncludedTerm: 2, Members: []raft.NodeID{"a", "b", "c"}, Data: []byte("left")}
+	observation.Nodes[1].Durable.Snapshot = raft.Snapshot{LastIncludedIndex: 4, LastIncludedTerm: 2, Members: []raft.NodeID{"a", "b", "c"}, Data: []byte("right")}
+	violations := checker.Observe(observation)
+	found := false
+	for _, violation := range violations {
+		found = found || violation.ID == SnapshotConflict
+	}
+	if !found {
+		t.Fatalf("violations = %+v", violations)
+	}
+}
+
+func TestCheckerHandlesMaximumLogIndex(t *testing.T) {
+	t.Parallel()
+
+	members := []raft.NodeID{"a", "b"}
+	snapshot := raft.Snapshot{LastIncludedIndex: math.MaxUint64 - 1, LastIncludedTerm: 1, Members: members, Data: []byte("prefix")}
+	state := raft.PersistentState{
+		HardState: raft.HardState{CurrentTerm: 2, CommitIndex: math.MaxUint64},
+		Snapshot:  snapshot,
+		Log:       []raft.Entry{{Index: math.MaxUint64, Term: 2, Type: raft.EntryCommand}},
+	}
+	checker := New(members)
+	violations := checker.Observe(Observation{Members: members, Nodes: []NodeObservation{{ID: "a", Durable: state}, {ID: "b", Durable: raft.ClonePersistentState(state)}}})
+	if len(violations) != 0 {
 		t.Fatalf("violations = %+v", violations)
 	}
 }

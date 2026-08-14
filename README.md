@@ -19,9 +19,10 @@ The project is created and maintained by
 > cluster harness, safety checker, observational trace decoder, and exact
 > semantic decision replay are implemented. Self-describing run artifacts and
 > the research CLI are also usable. Bounded prefix exploration and
-> fingerprint-preserving semantic minimization are implemented. Snapshots,
-> joint consensus, production adapters, and comparative evaluation remain
-> active research work.
+> fingerprint-preserving semantic minimization are implemented. Durable
+> snapshots, safe log compaction, and snapshot-bearing run artifacts are also
+> implemented. Joint consensus, production adapters, and comparative
+> evaluation remain active research work.
 
 ## Why d-raft?
 
@@ -45,12 +46,12 @@ plan.
 | Package | Role |
 | --- | --- |
 | `sim` | Protocol-neutral virtual-time scheduler, stable RNG streams, typed network, partitions, and observational JSONL traces |
-| `raft` | Pure deterministic Raft reference state machine with elections, heartbeats, log replication, current-term commit, and leader no-op entries |
-| `raftsim` | Durable storage, timers, network delivery, partitions, crash/restart, process incarnations, and persistence barriers |
-| `check` | Independent election, voting, term, log, commit, and apply safety witnesses with stable fingerprints |
+| `raft` | Pure deterministic Raft reference state machine with elections, replication, current-term commit, snapshots, compaction, and leader no-op entries |
+| `raftsim` | Durable storage, timers, network delivery, partitions, crash/restart, snapshot installation, process incarnations, and persistence barriers |
+| `check` | Independent election, voting, term, log, commit, apply, and equal-boundary snapshot witnesses with stable fingerprints |
 | `decision` | Versioned semantic choices, seeded selection, recording, exact tape replay, and domain-drift detection |
 | `trace` | Bounded, line-aware, payload-lossless decoder for known `d-raft.trace/v1` fields |
-| `artifact` | Strict, self-describing `d-raft.run/v1` artifacts with scenarios, configuration, environment, tape, outcome, digest, and witnesses |
+| `artifact` | Strict, self-describing `d-raft.run/v2` artifacts with scenarios, configuration, environment, tape, outcome, digest, and witnesses; legacy v1 decoding remains available |
 | `experiment` | Clean-run execution of versioned scenarios and external crash, restart, partition, heal, and proposal actions |
 | `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
 | `explore` | Clean-rerun bounded DFS over semantic choice prefixes with deterministic suffix completion |
@@ -88,7 +89,7 @@ Step(input)
   -> Persist(token, state)
   -> simulated durable completion
   -> Step(Persisted(token))
-  -> dependent messages, timers, and apply effects
+  -> dependent messages, timers, apply, and snapshot-install effects
 ```
 
 A crash destroys volatile `raft.Node` state. Restart creates a fresh node only
@@ -148,7 +149,7 @@ if err := replay.Finish(); err != nil {
 `TapeDecider` stops at the first choice ID, kind, domain, or selection mismatch.
 This makes replay drift explicit instead of silently producing a different run.
 Exact execution also requires the same scenario version, external actions, and
-run horizon; `d-raft.run/v1` bundles those inputs with the tape.
+run horizon; `d-raft.run/v2` bundles those inputs with the tape.
 
 ## Command-line workflow
 
@@ -171,10 +172,10 @@ publication, so an encoding or filesystem failure does not leave a plausible
 partial result. Artifacts remain private (`0600`) by default.
 
 The current built-in scenario is a steady fixed-membership cluster. The schema
-already represents scheduled proposals, partitions, healing, crashes, and
-restarts, including the crash-after-persistence-before-acknowledgement boundary;
-named fault scenarios, state caching, and production adapters are later
-milestones. See [ARTIFACTS.md](ARTIFACTS.md),
+also represents scheduled proposals, snapshots, partitions, healing, crashes,
+and restarts, including the crash-after-persistence-before-acknowledgement
+boundary; named fault scenarios, state caching, and production adapters are
+later milestones. See [ARTIFACTS.md](ARTIFACTS.md), [SNAPSHOTS.md](SNAPSHOTS.md),
 [EXPLORATION.md](EXPLORATION.md), and [MINIMIZATION.md](MINIMIZATION.md).
 
 ## Observational traces

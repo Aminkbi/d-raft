@@ -53,7 +53,7 @@ func Artifact(input artifact.Run, bounds Bounds) (Result, error) {
 	if target == "" || !hasViolation(input.Outcome, target) {
 		return Result{}, ErrNoViolation
 	}
-	if input.Adapter.ID != artifact.ReferenceAdapterID || input.Adapter.Version != artifact.ReferenceAdapterV1 {
+	if input.Adapter.ID != artifact.ReferenceAdapterID || input.Adapter.Version != artifact.ReferenceAdapterCurrent {
 		return Result{}, fmt.Errorf("minimize: unsupported adapter %s@%s", input.Adapter.ID, input.Adapter.Version)
 	}
 

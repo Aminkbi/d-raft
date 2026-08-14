@@ -99,7 +99,7 @@ func exploreCommand(args []string, stdout, stderr io.Writer) int {
 	if result.FirstViolation == nil {
 		return 0
 	}
-	run := artifact.Run{Schema: artifact.SchemaVersion, Scenario: scenario, Adapter: artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterV1}, Configuration: configuration, Reproducibility: artifact.NewReproducibility(*seed), Decisions: result.FirstViolation.Tape, Outcome: result.FirstViolation.Outcome}
+	run := artifact.Run{Schema: artifact.SchemaVersion, Scenario: scenario, Adapter: artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterCurrent}, Configuration: configuration, Reproducibility: artifact.NewReproducibility(*seed), Decisions: result.FirstViolation.Tape, Outcome: result.FirstViolation.Outcome}
 	if err := writeArtifact(*output, run); err != nil {
 		reportError(stderr, "draft explore: write counterexample", err)
 		return 2
@@ -191,7 +191,7 @@ func runCommand(args []string, stdout, stderr io.Writer) int {
 	run := artifact.Run{
 		Schema:          artifact.SchemaVersion,
 		Scenario:        scenario,
-		Adapter:         artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterV1},
+		Adapter:         artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterCurrent},
 		Configuration:   artifact.ConfigurationFrom(config),
 		Reproducibility: artifact.NewReproducibility(*seed),
 		Decisions:       recorder.Tape(),
@@ -223,7 +223,7 @@ func replayCommand(args []string, stdout, stderr io.Writer) int {
 		reportError(stderr, "draft replay", err)
 		return 2
 	}
-	if run.Adapter.ID != artifact.ReferenceAdapterID || run.Adapter.Version != artifact.ReferenceAdapterV1 {
+	if run.Adapter.ID != artifact.ReferenceAdapterID || run.Adapter.Version != artifact.ReferenceAdapterCurrent {
 		fmt.Fprintf(stderr, "draft replay: unsupported adapter %s@%s\n", safeText(run.Adapter.ID, 128), safeText(run.Adapter.Version, 64))
 		return 2
 	}

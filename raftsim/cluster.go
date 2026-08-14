@@ -98,13 +98,14 @@ func (c Config) validate() error {
 
 // Store is the durable state retained across process crashes.
 type Store struct {
-	State        raft.PersistentState
-	AppliedIndex uint64
-	Applied      []raft.Entry
+	State             raft.PersistentState
+	AppliedIndex      uint64
+	Applied           []raft.Entry
+	InstalledSnapshot raft.Snapshot
 }
 
 func (s Store) clone() Store {
-	result := Store{State: raft.ClonePersistentState(s.State), AppliedIndex: s.AppliedIndex}
+	result := Store{State: raft.ClonePersistentState(s.State), AppliedIndex: s.AppliedIndex, InstalledSnapshot: raft.CloneSnapshot(s.InstalledSnapshot)}
 	result.Applied = make([]raft.Entry, len(s.Applied))
 	for index, entry := range s.Applied {
 		result.Applied[index] = raft.CloneEntry(entry)
@@ -298,6 +299,24 @@ func (c *Cluster) ProposeTo(id raft.NodeID, data []byte) error {
 		return raft.ErrNotLeader
 	}
 	if err := c.submit(id, queuedInput{input: raft.Input{Kind: raft.InputProposal, Data: slices.Clone(data)}, incarnation: process.incarnation}); err != nil {
+		return err
+	}
+	c.observe()
+	return c.err
+}
+
+// Snapshot compacts a live node through its current applied index. Data is the
+// application checkpoint corresponding to that index.
+func (c *Cluster) Snapshot(id raft.NodeID, data []byte) error {
+	process, ok := c.processes[id]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownNode, id)
+	}
+	if !process.up {
+		return fmt.Errorf("%w: %q", ErrNodeDown, id)
+	}
+	index := process.store.AppliedIndex
+	if err := c.submit(id, queuedInput{input: raft.Input{Kind: raft.InputSnapshot, SnapshotIndex: index, SnapshotData: slices.Clone(data)}, incarnation: process.incarnation}); err != nil {
 		return err
 	}
 	c.observe()
@@ -599,6 +618,16 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 			}
 			process.store.AppliedIndex = effect.Entry.Index
 			process.store.Applied = append(process.store.Applied, raft.CloneEntry(effect.Entry))
+		case raft.EffectInstallSnapshot:
+			if effect.Snapshot.LastIncludedIndex < process.store.AppliedIndex {
+				return fmt.Errorf("%w: node=%q snapshot=%d applied=%d", ErrApplyOrder, id, effect.Snapshot.LastIncludedIndex, process.store.AppliedIndex)
+			}
+			process.store.AppliedIndex = effect.Snapshot.LastIncludedIndex
+			process.store.InstalledSnapshot = raft.CloneSnapshot(effect.Snapshot)
+			process.store.Applied = slices.DeleteFunc(process.store.Applied, func(entry raft.Entry) bool {
+				return entry.Index <= effect.Snapshot.LastIncludedIndex
+			})
+			c.trace(id, sim.TracePersistence, "snapshot_installed", effect.Snapshot)
 		default:
 			return fmt.Errorf("raftsim: unknown effect kind %d", effect.Kind)
 		}
@@ -889,6 +918,8 @@ func inputAction(input raft.Input) string {
 		return "proposal"
 	case raft.InputPersisted:
 		return "persisted"
+	case raft.InputSnapshot:
+		return "snapshot"
 	default:
 		return "unknown"
 	}

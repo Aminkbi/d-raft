@@ -1,6 +1,6 @@
 # Run artifacts
 
-`d-raft.run/v1` is the portable unit produced by the research CLI. It bundles
+`d-raft.run/v2` is the portable unit produced by the research CLI. It bundles
 the inputs required to reconstruct a run with the evidence required to verify
 its result.
 
@@ -26,18 +26,25 @@ the observation digest and witnesses verify the result.
 
 ## Scenario actions
 
-The v1 schema supports `propose`, `crash`, `restart`,
+The v2 schema supports `propose`, `snapshot`, `crash`, `restart`,
 `crash_after_next_persist`, `partition`, and `heal`. The persistence-boundary
 action arms a crash after the next durable write completes but before its
 acknowledgement releases dependent effects. Actions are sorted by nondecreasing
 virtual time. Actions at the same time run
 in their listed order, after events armed during initial cluster construction.
-Invalid node references, duplicate partition membership, unrelated action
+`snapshot` binds its bytes to the target node's application index when the
+action executes, so a queued persistence acknowledgement cannot move the
+checkpoint boundary underneath already-captured bytes. Invalid node
+references, duplicate partition membership, unrelated action
 fields, out-of-range times, and unknown action kinds are rejected before a run.
 
 ## Validation and replay
 
-Artifact encoding and decoding are strict and bounded to 64 MiB. The schema
+Artifact encoding and decoding are strict and bounded to 64 MiB. The v2 encoder
+preflights aggregate variable-size content and per-choice option/context limits,
+then streams bounded components into an exact-size capped buffer before
+publishing any caller-visible bytes. JSON escaping and base64 expansion cannot
+bypass the output cap. The schema
 also caps a run at 31 members, 10,000 actions, 100,000 decisions, 1 MiB per
 action payload, 1,024 violations, 1 MiB per witness, 4 KiB of outcome error
 text, 1,000,000 simulator events, and 24 hours of virtual time. Every scenario
@@ -70,7 +77,7 @@ authenticity; sign release artifacts and checksums separately.
 
 ## Current portability boundary
 
-The only adapter in v1 is `d-raft/reference@1`. Cross-implementation replay
+The current built-in adapter is `d-raft/reference@2`. Cross-implementation replay
 will require an adapter to map its batching, timer, storage, and membership
 semantics onto the common choice model. A single-threaded artifact cannot
 represent production data races, and the current atomic store does not model
@@ -82,7 +89,22 @@ Raft message codec use JSON integer numbers; consumers must parse those fields
 with 64-bit or arbitrary-precision integers and must never route them through
 binary floating point.
 
-The final-state digest is defined by `d-raft.observation/v1`: virtual time;
+The final-state digest is defined by `d-raft.observation/v2`: virtual time;
 canonical member order; process availability; the full `raft.Status`; durable
-and applied store state; and ordered violation witnesses. Changing those fields
+and applied store state, including installed snapshots; and ordered violation
+witnesses. Changing those fields
 or their JSON representation requires a new observation schema identifier.
+
+## Legacy v1 boundary
+
+A coherent published v1 artifact uses `d-raft/reference@1`, message codec v1,
+checker v1, and observation v1. The library still strictly decodes, validates,
+and re-encodes that tuple. `draft inspect` accepts it; current `draft replay`
+and `draft minimize` reject it explicitly because the execution adapter is v2.
+Snapshot actions and snapshot-conflict witnesses are invalid in v1. This avoids
+silently redefining any published v1 identifier.
+
+V2's new per-choice and aggregate producer limits are not retroactively applied
+to v1. Legacy input is still bounded by the 64 MiB decoder and exact encoder
+output caps, preserving historically valid v1 tapes with larger individual
+contexts.

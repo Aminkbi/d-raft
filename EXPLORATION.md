@@ -26,7 +26,7 @@ optionally midpoint. Results separately report:
 - truncation by the run budget.
 
 The first matching violation can be emitted directly as a normal
-`d-raft.run/v1` artifact and replayed with `draft replay`.
+`d-raft.run/v2` artifact and replayed with `draft replay`.
 
 ## Bounds and interpretation
 

@@ -95,3 +95,55 @@ func TestScenarioStepBudget(t *testing.T) {
 		t.Fatalf("outcome = %+v", outcome)
 	}
 }
+
+func TestSnapshotScenarioActionCompactsReferenceNode(t *testing.T) {
+	t.Parallel()
+
+	config := raftsim.DefaultConfig("a")
+	config.ElectionTimeoutMin = 10 * time.Millisecond
+	config.ElectionTimeoutMax = 10 * time.Millisecond
+	config.HeartbeatInterval = 2 * time.Millisecond
+	config.StorageLatency = time.Millisecond
+	cluster, err := raftsim.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scenario := artifact.Scenario{
+		ID: "snapshot", Version: "1", DurationNS: int64(60 * time.Millisecond), MaxSteps: 1_000,
+		Actions: []artifact.Action{
+			{AtNS: int64(25 * time.Millisecond), Kind: artifact.ActionPropose, Node: "a", Data: []byte("one")},
+			{AtNS: int64(35 * time.Millisecond), Kind: artifact.ActionSnapshot, Node: "a", Data: []byte("state@2")},
+		},
+	}
+	outcome, err := executeScheduled(cluster, scenario)
+	if err != nil || outcome.Status != artifact.OutcomeCompleted {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	store, err := cluster.Store("a")
+	if err != nil || store.State.Snapshot.LastIncludedIndex != 2 || string(store.State.Snapshot.Data) != "state@2" {
+		t.Fatalf("store=%+v err=%v", store, err)
+	}
+}
+
+func TestObservationV2DigestIncludesSnapshotState(t *testing.T) {
+	t.Parallel()
+
+	base := observationSnapshot{Nodes: []nodeSnapshot{{ID: "a", Up: true, Store: raftsim.Store{}}}}
+	withSnapshot := base
+	withSnapshot.Nodes = append([]nodeSnapshot(nil), base.Nodes...)
+	withSnapshot.Nodes[0].Store.State = raft.PersistentState{
+		HardState: raft.HardState{CurrentTerm: 1, CommitIndex: 1},
+		Snapshot:  raft.Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 1, Members: []raft.NodeID{"a"}, Data: []byte("state")},
+	}
+	left, err := artifact.DigestJSON(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := artifact.DigestJSON(withSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left == right {
+		t.Fatal("snapshot state did not change observation-v2 digest")
+	}
+}

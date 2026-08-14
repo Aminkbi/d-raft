@@ -1,11 +1,32 @@
 package raft
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"slices"
 	"testing"
 )
+
+func TestSnapshotMessageJSONV2GoldenAndClone(t *testing.T) {
+	t.Parallel()
+
+	message := Message{Type: InstallSnapshot, From: "a", To: "b", Term: math.MaxUint64, Sequence: 7, Snapshot: Snapshot{LastIncludedIndex: math.MaxUint64, LastIncludedTerm: 9, Members: []NodeID{"a", "b"}, Data: []byte{0xff}}}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"Type":5,"From":"a","To":"b","Term":18446744073709551615,"Sequence":7,"LastLogIndex":0,"LastLogTerm":0,"VoteGranted":false,"PrevLogIndex":0,"PrevLogTerm":0,"Entries":null,"LeaderCommit":0,"Success":false,"MatchIndex":0,"RejectHint":0,"Snapshot":{"LastIncludedIndex":18446744073709551615,"LastIncludedTerm":9,"Members":["a","b"],"Data":"/w=="}}`
+	if string(encoded) != want {
+		t.Fatalf("codec v2 JSON\n got: %s\nwant: %s", encoded, want)
+	}
+	clone := CloneMessage(message)
+	message.Snapshot.Members[0] = "changed"
+	message.Snapshot.Data[0] = 0
+	if clone.Snapshot.Members[0] != "a" || clone.Snapshot.Data[0] != 0xff {
+		t.Fatalf("clone changed: %+v", clone.Snapshot)
+	}
+}
 
 func TestElectionPersistsSelfVoteBeforeSending(t *testing.T) {
 	t.Parallel()
@@ -162,6 +183,155 @@ func TestElectionRejectsTermOverflow(t *testing.T) {
 	node := mustNode(t, "a", []NodeID{"a"}, PersistentState{HardState: HardState{CurrentTerm: math.MaxUint64}}, 0)
 	if _, err := node.Step(Input{Kind: InputElectionTimeout}); !errors.Is(err, ErrTermExhausted) {
 		t.Fatalf("overflow error = %v", err)
+	}
+}
+
+func TestLocalSnapshotCompactsAppliedPrefix(t *testing.T) {
+	t.Parallel()
+
+	node := mustNode(t, "a", []NodeID{"a"}, PersistentState{}, 0)
+	_, _ = acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputElectionTimeout}))
+	_, _ = acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputProposal, Data: []byte("one")}))
+	persist, after := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputSnapshot, SnapshotIndex: 2, SnapshotData: []byte("state@2")}))
+	if len(after) != 0 || persist.State.Snapshot.LastIncludedIndex != 2 || persist.State.Snapshot.LastIncludedTerm != 1 || string(persist.State.Snapshot.Data) != "state@2" || len(persist.State.Log) != 0 {
+		t.Fatalf("snapshot persist=%+v after=%+v", persist.State, after)
+	}
+	persist, applied := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputProposal, Data: []byte("two")}))
+	if len(persist.State.Log) != 1 || persist.State.Log[0].Index != 3 || persist.State.HardState.CommitIndex != 3 || len(applied) != 1 || applied[0].Entry.Index != 3 {
+		t.Fatalf("post-snapshot persist=%+v effects=%+v", persist.State, applied)
+	}
+}
+
+func TestAppendEntriesRejectsMalformedBatchBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	node := mustNode(t, "b", []NodeID{"a", "b", "c"}, PersistentState{HardState: HardState{CurrentTerm: 1}}, 0)
+	effects := mustStep(t, node, Input{Kind: InputMessage, Message: Message{
+		Type: AppendEntries, From: "a", To: "b", Term: 1,
+		Entries: []Entry{
+			{Index: 1, Term: 1, Type: EntryCommand},
+			{Index: 2, Term: 1, Type: EntryType(255)},
+		},
+	}})
+	if len(effects) != 2 || effects[0].Kind != EffectResetElectionTimer || effects[1].Message.Success || len(node.Status().Log) != 0 || node.Status().AwaitingPersistence {
+		t.Fatalf("effects=%+v status=%+v", effects, node.Status())
+	}
+}
+
+func TestAppendEntriesRejectsCompactedPrefix(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c"}
+	state := PersistentState{HardState: HardState{CurrentTerm: 2, CommitIndex: 5}, Snapshot: Snapshot{LastIncludedIndex: 5, LastIncludedTerm: 1, Members: members}}
+	node := mustNode(t, "b", members, state, 5)
+	effects := mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntries, From: "a", To: "b", Term: 2, PrevLogIndex: 4}})
+	if len(effects) != 2 || effects[1].Message.Success || effects[1].Message.RejectHint != 6 {
+		t.Fatalf("effects = %+v", effects)
+	}
+}
+
+func TestIndexExhaustionDoesNotWrapSnapshotsOrAppendBatches(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c"}
+	state := PersistentState{
+		HardState: HardState{CurrentTerm: 3, CommitIndex: math.MaxUint64 - 1},
+		Snapshot:  Snapshot{LastIncludedIndex: math.MaxUint64 - 1, LastIncludedTerm: 1, Members: members},
+		Log:       []Entry{{Index: math.MaxUint64, Term: 2, Type: EntryCommand}},
+	}
+	node := mustNode(t, "b", members, state, math.MaxUint64-1)
+	overflow := mustStep(t, node, Input{Kind: InputMessage, Message: Message{
+		Type: AppendEntries, From: "a", To: "b", Term: 3,
+		PrevLogIndex: math.MaxUint64 - 1, PrevLogTerm: 1,
+		Entries: []Entry{{Index: math.MaxUint64, Term: 2, Type: EntryCommand}, {Index: 0, Term: 3, Type: EntryCommand}},
+	}})
+	if len(overflow) != 2 || overflow[1].Message.Success || node.Status().LastLogIndex != math.MaxUint64 {
+		t.Fatalf("overflow effects=%+v status=%+v", overflow, node.Status())
+	}
+
+	snapshot := Snapshot{LastIncludedIndex: math.MaxUint64, LastIncludedTerm: 2, Members: members, Data: []byte("max")}
+	persist, _ := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: InstallSnapshot, From: "a", To: "b", Term: 3, Snapshot: snapshot}}))
+	if persist.State.Snapshot.LastIncludedIndex != math.MaxUint64 || len(persist.State.Log) != 0 || persist.State.HardState.CommitIndex != math.MaxUint64 {
+		t.Fatalf("persisted state = %+v", persist.State)
+	}
+}
+
+func TestPersistentStateRejectsImpossibleTermsAndEntryTypes(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a"}
+	cases := []PersistentState{
+		{HardState: HardState{CurrentTerm: 1, CommitIndex: 1}, Snapshot: Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 2, Members: members}},
+		{HardState: HardState{CurrentTerm: 1}, Log: []Entry{{Index: 1, Term: 2, Type: EntryCommand}}},
+		{HardState: HardState{CurrentTerm: 1}, Log: []Entry{{Index: 1, Term: 1, Type: EntryType(255)}}},
+		{HardState: HardState{CurrentTerm: 2}, Log: []Entry{{Index: 1, Term: 2, Type: EntryCommand}, {Index: 2, Term: 1, Type: EntryCommand}}},
+	}
+	for _, state := range cases {
+		if _, err := New(Config{ID: "a", Members: members}, state); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("state=%+v error=%v", state, err)
+		}
+	}
+	installMembers := []NodeID{"a", "b"}
+	node := mustNode(t, "a", installMembers, PersistentState{HardState: HardState{CurrentTerm: 2}}, 0)
+	effects := mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: InstallSnapshot, From: "b", To: "a", Term: 2, Snapshot: Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 3, Members: installMembers}}})
+	if len(effects) != 2 || effects[1].Message.Success {
+		t.Fatalf("future-term snapshot effects = %+v", effects)
+	}
+}
+
+func TestInstallSnapshotWaitsForPersistenceAndRecoversAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c"}
+	snapshot := Snapshot{LastIncludedIndex: 5, LastIncludedTerm: 2, Members: members, Data: []byte("checkpoint")}
+	node := mustNode(t, "b", members, PersistentState{}, 0)
+	effects := mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: InstallSnapshot, From: "a", To: "b", Term: 3, Sequence: 7, Snapshot: snapshot}})
+	if len(effects) != 1 || effects[0].Kind != EffectPersist || effects[0].State.Snapshot.LastIncludedIndex != 5 || effects[0].State.HardState.CommitIndex != 5 {
+		t.Fatalf("pre-persist effects = %+v", effects)
+	}
+	persisted := effects[0].State
+	_, after := acknowledgeOnlyPersist(t, node, effects)
+	if got := effectKinds(after); !slices.Equal(got, []EffectKind{EffectResetElectionTimer, EffectInstallSnapshot, EffectSend}) || !after[2].Message.Success || after[2].Message.MatchIndex != 5 {
+		t.Fatalf("post-persist effects = %+v", after)
+	}
+
+	restarted := mustNode(t, "b", members, persisted, 0)
+	start := restarted.Start()
+	if got := effectKinds(start); !slices.Equal(got, []EffectKind{EffectInstallSnapshot, EffectResetElectionTimer}) || start[0].Snapshot.LastIncludedIndex != 5 {
+		t.Fatalf("restart effects = %+v", start)
+	}
+}
+
+func TestInstallSnapshotPreservesMatchingSuffix(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c"}
+	state := PersistentState{HardState: HardState{CurrentTerm: 3, CommitIndex: 3}, Log: []Entry{
+		{Index: 1, Term: 1, Type: EntryCommand}, {Index: 2, Term: 1, Type: EntryCommand}, {Index: 3, Term: 2, Type: EntryCommand},
+		{Index: 4, Term: 2, Type: EntryCommand}, {Index: 5, Term: 3, Type: EntryCommand}, {Index: 6, Term: 3, Type: EntryCommand},
+	}}
+	node := mustNode(t, "b", members, state, 3)
+	snapshot := Snapshot{LastIncludedIndex: 4, LastIncludedTerm: 2, Members: members, Data: []byte("through-four")}
+	persist, _ := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: InstallSnapshot, From: "a", To: "b", Term: 3, Sequence: 1, Snapshot: snapshot}}))
+	if len(persist.State.Log) != 2 || persist.State.Log[0].Index != 5 || persist.State.Log[1].Index != 6 {
+		t.Fatalf("preserved suffix = %+v", persist.State)
+	}
+}
+
+func TestLeaderSendsSnapshotToFollowerBehindCompaction(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c"}
+	state := PersistentState{HardState: HardState{CurrentTerm: 2, CommitIndex: 4}, Snapshot: Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 1, Members: members, Data: []byte("s3")}, Log: []Entry{{Index: 4, Term: 2, Type: EntryCommand}}}
+	node := mustNode(t, "a", members, state, 4)
+	_, election := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputElectionTimeout}))
+	request := findMessage(t, election, RequestVote, "b")
+	_, leaderEffects := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: RequestVoteResponse, From: "b", To: "a", Term: request.Term, VoteGranted: true}}))
+	appendMessage := findMessage(t, leaderEffects, AppendEntries, "b")
+	retry := mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntriesResponse, From: "b", To: "a", Term: request.Term, Sequence: appendMessage.Sequence, Success: false, RejectHint: 1}})
+	snapshotMessage := findMessage(t, retry, InstallSnapshot, "b")
+	if snapshotMessage.Snapshot.LastIncludedIndex != 3 || string(snapshotMessage.Snapshot.Data) != "s3" {
+		t.Fatalf("snapshot message = %+v", snapshotMessage)
 	}
 }
 

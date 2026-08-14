@@ -73,8 +73,10 @@ flow.
 
 ## Semantic decision and run artifacts
 
-Semantic choices use `d-raft.decisions/v1`; self-describing executions use
-`d-raft.run/v1`. These schemas are independent from the observational trace.
+Semantic choices use `d-raft.decisions/v1`; current self-describing executions
+use `d-raft.run/v2`. Published `d-raft.run/v1` artifacts remain strictly
+decodable and inspectable. These schemas are independent from the observational
+trace.
 A v1 decision entry records the full choice, SHA-256 identities of its legal
 domain and semantic context, and the selected alternative. Exact replay stops
 at the first identity, kind, domain, context, or selection mismatch and also
@@ -96,3 +98,14 @@ Run-header seeds are canonical decimal strings. Decision-v1 option weights,
 ranges, selections, and Raft message integers remain JSON numbers for
 compatibility with the published schema; consumers must use lossless integer
 decoding rather than `float64`.
+
+The built-in reference compatibility tuple is atomic:
+
+- run v1: `d-raft/reference@1`, message codec v1, checker v1, observation v1;
+- run v2: `d-raft/reference@2`, message codec v2, checker v2, observation v2.
+
+The current CLI executes and minimizes only the v2 reference adapter. It can
+decode and inspect a coherent v1 artifact, but rejects replay rather than
+pretending that snapshot-aware semantics reproduced a v1 observation digest.
+Run v2 adds the scheduled `snapshot` action and snapshot-bearing protocol,
+durable, application-store, checker, and observation state.

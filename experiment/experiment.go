@@ -126,6 +126,8 @@ func applyAction(cluster *raftsim.Cluster, action artifact.Action) error {
 		return cluster.Restart(action.Node)
 	case artifact.ActionCrashAfterNextPersist:
 		return cluster.CrashAfterNextPersist(action.Node)
+	case artifact.ActionSnapshot:
+		return cluster.Snapshot(action.Node, action.Data)
 	case artifact.ActionPartition:
 		return cluster.Partition(action.Groups...)
 	case artifact.ActionHeal:

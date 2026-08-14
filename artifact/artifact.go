@@ -24,16 +24,27 @@ import (
 )
 
 const (
-	SchemaVersion             = "d-raft.run/v1"
+	SchemaV1                  = "d-raft.run/v1"
+	SchemaVersion             = "d-raft.run/v2"
 	ReferenceAdapterID        = "d-raft/reference"
 	ReferenceAdapterV1        = "1"
+	ReferenceAdapterV2        = "2"
+	ReferenceAdapterCurrent   = ReferenceAdapterV2
 	MessageCodecV1            = "d-raft.raft-message/json-v1"
+	MessageCodecV2            = "d-raft.raft-message/json-v2"
+	MessageCodecCurrent       = MessageCodecV2
 	ObservationSchemaV1       = "d-raft.observation/v1"
+	ObservationSchemaV2       = "d-raft.observation/v2"
+	ObservationSchemaCurrent  = ObservationSchemaV2
 	DefaultMaxArtifactBytes   = 64 << 20
 	MaxMembers                = 31
 	MaxActions                = 10_000
 	MaxDecisions              = 100_000
 	MaxActionPayloadBytes     = 1 << 20
+	MaxDecisionContextBytes   = 1 << 20
+	MaxDecisionOptions        = 1_024
+	MaxTotalDecisionOptions   = 1_000_000
+	MaxDecisionTextBytes      = 4 << 10
 	MaxViolations             = 1_024
 	MaxViolationEvidenceBytes = 1 << 20
 	MaxOutcomeErrorBytes      = 4 << 10
@@ -78,6 +89,7 @@ const (
 	ActionCrash                 ActionKind = "crash"
 	ActionRestart               ActionKind = "restart"
 	ActionCrashAfterNextPersist ActionKind = "crash_after_next_persist"
+	ActionSnapshot              ActionKind = "snapshot"
 	ActionPartition             ActionKind = "partition"
 	ActionHeal                  ActionKind = "heal"
 )
@@ -179,7 +191,7 @@ type Outcome struct {
 	Violations        []check.Violation `json:"violations,omitempty"`
 }
 
-// Run is one complete d-raft.run/v1 artifact.
+// Run is one complete versioned d-raft run artifact.
 type Run struct {
 	Schema          string          `json:"schema"`
 	Scenario        Scenario        `json:"scenario"`
@@ -193,11 +205,11 @@ type Run struct {
 // NewReproducibility captures deterministic inputs and available build data.
 func NewReproducibility(seed uint64) Reproducibility {
 	revision, modified := buildRevision()
-	return Reproducibility{DecisionSeed: Uint64(seed), GitRevision: revision, GitModified: modified, GoVersion: runtime.Version(), DecisionSchema: decision.SchemaVersion, CheckerSchema: check.SchemaVersion, MessageCodec: MessageCodecV1, ObservationSchema: ObservationSchemaV1}
+	return Reproducibility{DecisionSeed: Uint64(seed), GitRevision: revision, GitModified: modified, GoVersion: runtime.Version(), DecisionSchema: decision.SchemaVersion, CheckerSchema: check.SchemaVersion, MessageCodec: MessageCodecCurrent, ObservationSchema: ObservationSchemaCurrent}
 }
 
 func (r Run) Validate() error {
-	if r.Schema != SchemaVersion {
+	if r.Schema != SchemaV1 && r.Schema != SchemaVersion {
 		return fmt.Errorf("%w: schema %q", ErrInvalidArtifact, r.Schema)
 	}
 	if r.Adapter.ID == "" || r.Adapter.Version == "" {
@@ -206,17 +218,41 @@ func (r Run) Validate() error {
 	if !validIdentifier(r.Adapter.ID, true, 128) || !validIdentifier(r.Adapter.Version, false, 64) {
 		return fmt.Errorf("%w: invalid adapter identity", ErrInvalidArtifact)
 	}
-	if err := ValidateExperiment(r.Scenario, r.Configuration); err != nil {
+	if err := validateConfiguration(r.Configuration); err != nil {
 		return err
 	}
-	if r.Reproducibility.DecisionSchema != decision.SchemaVersion || r.Reproducibility.CheckerSchema != check.SchemaVersion || r.Reproducibility.ObservationSchema != ObservationSchemaV1 || r.Reproducibility.MessageCodec == "" || r.Reproducibility.GoVersion == "" || r.Reproducibility.GitRevision == "" {
+	if err := validateScenario(r.Scenario, r.Configuration.Members, r.Schema == SchemaVersion); err != nil {
+		return err
+	}
+	if r.Reproducibility.DecisionSchema != decision.SchemaVersion ||
+		!validMetadata(r.Reproducibility.CheckerSchema, 128) ||
+		!validMetadata(r.Reproducibility.MessageCodec, 128) ||
+		!validMetadata(r.Reproducibility.ObservationSchema, 128) ||
+		!validMetadata(r.Reproducibility.GoVersion, 128) ||
+		!validMetadata(r.Reproducibility.GitRevision, 256) {
 		return fmt.Errorf("%w: incomplete reproducibility metadata", ErrInvalidArtifact)
 	}
-	if r.Adapter.ID == ReferenceAdapterID && r.Adapter.Version == ReferenceAdapterV1 && r.Reproducibility.MessageCodec != MessageCodecV1 {
-		return fmt.Errorf("%w: unsupported reference adapter codec %q", ErrInvalidArtifact, r.Reproducibility.MessageCodec)
+	if r.Adapter.ID == ReferenceAdapterID {
+		switch r.Adapter.Version {
+		case ReferenceAdapterV1:
+			if r.Schema != SchemaV1 || r.Reproducibility.MessageCodec != MessageCodecV1 || r.Reproducibility.CheckerSchema != check.SchemaV1 || r.Reproducibility.ObservationSchema != ObservationSchemaV1 {
+				return fmt.Errorf("%w: inconsistent reference adapter v1 schemas", ErrInvalidArtifact)
+			}
+		case ReferenceAdapterV2:
+			if r.Schema != SchemaVersion || r.Reproducibility.MessageCodec != MessageCodecV2 || r.Reproducibility.CheckerSchema != check.SchemaVersion || r.Reproducibility.ObservationSchema != ObservationSchemaV2 {
+				return fmt.Errorf("%w: inconsistent reference adapter v2 schemas", ErrInvalidArtifact)
+			}
+		default:
+			return fmt.Errorf("%w: unsupported reference adapter version %q", ErrInvalidArtifact, r.Adapter.Version)
+		}
 	}
 	if len(r.Decisions.Entries) > MaxDecisions {
 		return fmt.Errorf("%w: too many decisions", ErrInvalidArtifact)
+	}
+	if r.Schema == SchemaVersion {
+		if err := validateResourceBudget(r, DefaultMaxArtifactBytes); err != nil {
+			return err
+		}
 	}
 	if _, err := decision.NewTapeDecider(r.Decisions); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArtifact, err)
@@ -229,7 +265,11 @@ func (r Run) Validate() error {
 		memberSet[member] = struct{}{}
 	}
 	for index, violation := range r.Outcome.Violations {
-		if !validIdentifier(violation.ID, true, 128) || violation.AtNS < 0 || violation.AtNS > r.Outcome.EndNS || len(violation.Evidence) > MaxViolationEvidenceBytes || check.ValidateViolation(violation) != nil {
+		validationErr := check.ValidateViolation(violation)
+		if validationErr == nil && r.Adapter.ID == ReferenceAdapterID {
+			validationErr = check.ValidateViolationForSchema(r.Reproducibility.CheckerSchema, violation)
+		}
+		if !validIdentifier(violation.ID, true, 128) || violation.AtNS < 0 || violation.AtNS > r.Outcome.EndNS || len(violation.Evidence) > MaxViolationEvidenceBytes || validationErr != nil {
 			return fmt.Errorf("%w: invalid violation witness %d", ErrInvalidArtifact, index)
 		}
 		for _, node := range violation.Nodes {
@@ -266,10 +306,10 @@ func ValidateExperiment(scenario Scenario, configuration Configuration) error {
 	if err := validateConfiguration(configuration); err != nil {
 		return err
 	}
-	return validateScenario(scenario, configuration.Members)
+	return validateScenario(scenario, configuration.Members, true)
 }
 
-// Encode validates and writes one indented JSON artifact.
+// Encode validates and writes one bounded JSON artifact.
 func Encode(writer io.Writer, run Run) error {
 	return encodeWithLimit(writer, run, DefaultMaxArtifactBytes)
 }
@@ -284,21 +324,175 @@ func encodeWithLimit(writer io.Writer, run Run, maximum int) error {
 	if err := run.Validate(); err != nil {
 		return err
 	}
-	var encoded bytes.Buffer
-	encoder := json.NewEncoder(&encoded)
-	encoder.SetIndent("", "  ")
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(run); err != nil {
+	if run.Schema == SchemaVersion {
+		if err := validateResourceBudget(run, maximum); err != nil {
+			return err
+		}
+	}
+	encoded := boundedBuffer{maximum: maximum}
+	if err := encodeRun(&encoded, run); err != nil {
 		return err
 	}
-	if encoded.Len() > maximum {
-		return ErrArtifactTooLarge
-	}
-	written, err := writer.Write(encoded.Bytes())
+	written, err := writer.Write(encoded.buffer.Bytes())
 	if err != nil {
 		return err
 	}
-	if written != encoded.Len() {
+	if written != encoded.buffer.Len() {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+type boundedBuffer struct {
+	buffer  bytes.Buffer
+	maximum int
+}
+
+func (b *boundedBuffer) Write(data []byte) (int, error) {
+	if len(data) > b.maximum-b.buffer.Len() {
+		return 0, ErrArtifactTooLarge
+	}
+	return b.buffer.Write(data)
+}
+
+type jsonLiteral string
+
+func encodeRun(writer io.Writer, run Run) error {
+	if err := writeJSONParts(writer, jsonLiteral(`{"schema":`), run.Schema, jsonLiteral(`,"scenario":`)); err != nil {
+		return err
+	}
+	if err := encodeScenario(writer, run.Scenario); err != nil {
+		return err
+	}
+	if err := writeJSONParts(writer, jsonLiteral(`,"adapter":`), run.Adapter, jsonLiteral(`,"configuration":`), run.Configuration, jsonLiteral(`,"reproducibility":`), run.Reproducibility, jsonLiteral(`,"decisions":`)); err != nil {
+		return err
+	}
+	if err := encodeTape(writer, run.Decisions); err != nil {
+		return err
+	}
+	if err := writeLiteral(writer, `,"outcome":`); err != nil {
+		return err
+	}
+	if err := encodeOutcome(writer, run.Outcome); err != nil {
+		return err
+	}
+	return writeLiteral(writer, "}\n")
+}
+
+func encodeScenario(writer io.Writer, scenario Scenario) error {
+	if err := writeJSONParts(writer, jsonLiteral(`{"id":`), scenario.ID, jsonLiteral(`,"version":`), scenario.Version, jsonLiteral(`,"duration_ns":`), scenario.DurationNS, jsonLiteral(`,"max_steps":`), scenario.MaxSteps); err != nil {
+		return err
+	}
+	if len(scenario.Actions) > 0 {
+		if err := writeLiteral(writer, `,"actions":[`); err != nil {
+			return err
+		}
+		for index, action := range scenario.Actions {
+			if index > 0 {
+				if err := writeLiteral(writer, ","); err != nil {
+					return err
+				}
+			}
+			if err := writeJSONValue(writer, action); err != nil {
+				return err
+			}
+		}
+		if err := writeLiteral(writer, "]"); err != nil {
+			return err
+		}
+	}
+	return writeLiteral(writer, "}")
+}
+
+func encodeTape(writer io.Writer, tape decision.Tape) error {
+	if err := writeJSONParts(writer, jsonLiteral(`{"schema":`), tape.Schema, jsonLiteral(`,"entries":`)); err != nil {
+		return err
+	}
+	if tape.Entries == nil {
+		return writeLiteral(writer, "null}")
+	}
+	if err := writeLiteral(writer, "["); err != nil {
+		return err
+	}
+	for index, entry := range tape.Entries {
+		if index > 0 {
+			if err := writeLiteral(writer, ","); err != nil {
+				return err
+			}
+		}
+		if err := writeJSONValue(writer, entry); err != nil {
+			return err
+		}
+	}
+	return writeLiteral(writer, "]}")
+}
+
+func encodeOutcome(writer io.Writer, outcome Outcome) error {
+	if err := writeJSONParts(writer, jsonLiteral(`{"status":`), outcome.Status, jsonLiteral(`,"steps":`), outcome.Steps, jsonLiteral(`,"end_ns":`), outcome.EndNS, jsonLiteral(`,"observation_digest":`), outcome.ObservationDigest); err != nil {
+		return err
+	}
+	if outcome.Error != "" {
+		if err := writeJSONParts(writer, jsonLiteral(`,"error":`), outcome.Error); err != nil {
+			return err
+		}
+	}
+	if len(outcome.Violations) > 0 {
+		if err := writeLiteral(writer, `,"violations":[`); err != nil {
+			return err
+		}
+		for index, violation := range outcome.Violations {
+			if index > 0 {
+				if err := writeLiteral(writer, ","); err != nil {
+					return err
+				}
+			}
+			if err := writeJSONValue(writer, violation); err != nil {
+				return err
+			}
+		}
+		if err := writeLiteral(writer, "]"); err != nil {
+			return err
+		}
+	}
+	return writeLiteral(writer, "}")
+}
+
+func writeJSONParts(writer io.Writer, parts ...any) error {
+	for _, part := range parts {
+		if literal, ok := part.(jsonLiteral); ok {
+			if err := writeLiteral(writer, string(literal)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := writeJSONValue(writer, part); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeJSONValue(writer io.Writer, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	written, err := writer.Write(encoded)
+	if err != nil {
+		return err
+	}
+	if written != len(encoded) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func writeLiteral(writer io.Writer, literal string) error {
+	written, err := io.WriteString(writer, literal)
+	if err != nil {
+		return err
+	}
+	if written != len(literal) {
 		return io.ErrShortWrite
 	}
 	return nil
@@ -362,7 +556,7 @@ func DigestJSON(value any) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func validateScenario(scenario Scenario, members []raft.NodeID) error {
+func validateScenario(scenario Scenario, members []raft.NodeID, allowSnapshots bool) error {
 	if !validIdentifier(scenario.ID, true, 128) || !validIdentifier(scenario.Version, false, 64) || scenario.DurationNS < 0 || scenario.DurationNS > MaxVirtualDurationNS || scenario.MaxSteps == 0 || scenario.MaxSteps > MaxScenarioSteps || len(scenario.Actions) > MaxActions {
 		return fmt.Errorf("%w: invalid scenario identity or duration", ErrInvalidArtifact)
 	}
@@ -389,6 +583,13 @@ func validateScenario(scenario Scenario, members []raft.NodeID) error {
 		case ActionCrash, ActionRestart, ActionCrashAfterNextPersist:
 			if len(action.Data) != 0 || len(action.Groups) != 0 {
 				return fmt.Errorf("%w: process action %d carries unrelated fields", ErrInvalidArtifact, index)
+			}
+			if _, ok := memberSet[action.Node]; !ok {
+				return fmt.Errorf("%w: action %d has unknown node", ErrInvalidArtifact, index)
+			}
+		case ActionSnapshot:
+			if !allowSnapshots || len(action.Groups) != 0 {
+				return fmt.Errorf("%w: snapshot action %d is unsupported or carries partition groups", ErrInvalidArtifact, index)
 			}
 			if _, ok := memberSet[action.Node]; !ok {
 				return fmt.Errorf("%w: action %d has unknown node", ErrInvalidArtifact, index)
@@ -458,6 +659,95 @@ func validIdentifier(value string, allowSlash bool, maximum int) bool {
 		return false
 	}
 	return true
+}
+
+func validMetadata(value string, maximum int) bool {
+	if len(value) == 0 || len(value) > maximum {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character < 0x20 || character > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validateResourceBudget(run Run, maximum int) error {
+	if maximum <= 0 {
+		return fmt.Errorf("%w: non-positive size limit", ErrInvalidArtifact)
+	}
+	budget := maximum / 2
+	used := 0
+	add := func(size int) error {
+		if size < 0 || size > budget-used {
+			return ErrArtifactTooLarge
+		}
+		used += size
+		return nil
+	}
+	stringsToCount := []string{
+		run.Schema, run.Scenario.ID, run.Scenario.Version, run.Adapter.ID, run.Adapter.Version,
+		run.Reproducibility.GitRevision, run.Reproducibility.GoVersion, run.Reproducibility.DecisionSchema,
+		run.Reproducibility.CheckerSchema, run.Reproducibility.MessageCodec, run.Reproducibility.ObservationSchema,
+		run.Decisions.Schema, string(run.Outcome.Status), run.Outcome.Error, run.Outcome.ObservationDigest,
+	}
+	for _, value := range stringsToCount {
+		if err := add(len(value)); err != nil {
+			return err
+		}
+	}
+	for _, member := range run.Configuration.Members {
+		if err := add(len(member)); err != nil {
+			return err
+		}
+	}
+	for _, action := range run.Scenario.Actions {
+		if err := add(len(action.Kind) + len(action.Node) + len(action.Data)); err != nil {
+			return err
+		}
+		for _, group := range action.Groups {
+			for _, member := range group {
+				if err := add(len(member)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	totalOptions := 0
+	for _, entry := range run.Decisions.Entries {
+		choice := entry.Choice
+		if len(choice.Context) > MaxDecisionContextBytes || len(choice.Options) > MaxDecisionOptions || len(choice.ID) > MaxDecisionTextBytes || len(choice.Kind) > MaxDecisionTextBytes || len(entry.Selection.Option) > MaxDecisionTextBytes {
+			return fmt.Errorf("%w: decision exceeds resource limit", ErrInvalidArtifact)
+		}
+		if len(choice.Options) > MaxTotalDecisionOptions-totalOptions {
+			return fmt.Errorf("%w: too many decision options", ErrInvalidArtifact)
+		}
+		totalOptions += len(choice.Options)
+		if err := add(len(choice.ID) + len(choice.Kind) + len(choice.Context) + len(entry.DomainDigest) + len(entry.ContextDigest) + len(entry.Selection.Option)); err != nil {
+			return err
+		}
+		for _, option := range choice.Options {
+			if len(option.ID) > MaxDecisionTextBytes {
+				return fmt.Errorf("%w: decision option exceeds resource limit", ErrInvalidArtifact)
+			}
+			if err := add(len(option.ID)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, violation := range run.Outcome.Violations {
+		if err := add(len(violation.ID) + len(violation.Evidence) + len(violation.Fingerprint)); err != nil {
+			return err
+		}
+		for _, node := range violation.Nodes {
+			if err := add(len(node)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func partitionGroupsSorted(groups [][]raft.NodeID) bool {

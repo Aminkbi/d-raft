@@ -21,7 +21,7 @@ a different message or timer.
 
 ## Output and metrics
 
-The output is a fresh, exact `d-raft.run/v1` artifact containing the full tape
+The output is a fresh, exact `d-raft.run/v2` artifact containing the full tape
 actually consumed by the minimized execution. The command also reports actions
 removed, guidance entries proven unnecessary, selections simplified, reruns,
 and whether the minimization budget was exhausted.

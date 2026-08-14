@@ -5,6 +5,7 @@ package raft
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 )
 
@@ -16,6 +17,7 @@ var (
 	ErrAwaitingPersistence   = errors.New("raft: awaiting persistence acknowledgement")
 	ErrUnexpectedPersistence = errors.New("raft: unexpected persistence acknowledgement")
 	ErrTermExhausted         = errors.New("raft: term space exhausted")
+	ErrIndexExhausted        = errors.New("raft: log index space exhausted")
 )
 
 // NodeID identifies a Raft member.
@@ -67,11 +69,21 @@ type HardState struct {
 	CommitIndex uint64
 }
 
+// Snapshot is an atomic application and log-prefix checkpoint. Members is the
+// configuration in force at LastIncludedIndex.
+type Snapshot struct {
+	LastIncludedIndex uint64
+	LastIncludedTerm  uint64
+	Members           []NodeID
+	Data              []byte
+}
+
 // PersistentState is the atomically persisted reference-model state. The
 // current implementation uses a full log image to make persistence ordering
 // explicit; production adapters may persist equivalent incremental updates.
 type PersistentState struct {
 	HardState HardState
+	Snapshot  Snapshot
 	Log       []Entry
 }
 
@@ -100,14 +112,26 @@ func (c Config) validate(state PersistentState) error {
 	if !slices.Contains(members, c.ID) {
 		return fmt.Errorf("%w: local node %q is not a member", ErrInvalidConfig, c.ID)
 	}
+	if state.Snapshot.LastIncludedIndex == 0 {
+		if state.Snapshot.LastIncludedTerm != 0 || len(state.Snapshot.Members) != 0 || len(state.Snapshot.Data) != 0 {
+			return fmt.Errorf("%w: zero snapshot carries metadata", ErrInvalidState)
+		}
+	} else if state.Snapshot.LastIncludedTerm == 0 || state.Snapshot.LastIncludedTerm > state.HardState.CurrentTerm || !slices.Equal(state.Snapshot.Members, members) {
+		return fmt.Errorf("%w: invalid snapshot boundary or membership", ErrInvalidState)
+	}
+	if math.MaxUint64-state.Snapshot.LastIncludedIndex < uint64(len(state.Log)) {
+		return fmt.Errorf("%w: log index overflow", ErrInvalidState)
+	}
+	previousTerm := state.Snapshot.LastIncludedTerm
 	for index, entry := range state.Log {
-		want := uint64(index + 1)
-		if entry.Index != want || entry.Term == 0 || entry.Type == 0 {
+		want := state.Snapshot.LastIncludedIndex + uint64(index) + 1
+		if entry.Index != want || entry.Term == 0 || entry.Term > state.HardState.CurrentTerm || entry.Term < previousTerm || entry.Type < EntryNoop || entry.Type > EntryCommand {
 			return fmt.Errorf("%w: log entry %d has index=%d term=%d type=%d", ErrInvalidState, index, entry.Index, entry.Term, entry.Type)
 		}
+		previousTerm = entry.Term
 	}
-	lastIndex := uint64(len(state.Log))
-	if state.HardState.CommitIndex > lastIndex || c.AppliedIndex > state.HardState.CommitIndex {
+	lastIndex := state.Snapshot.LastIncludedIndex + uint64(len(state.Log))
+	if state.HardState.CommitIndex < state.Snapshot.LastIncludedIndex || state.HardState.CommitIndex > lastIndex || c.AppliedIndex > state.HardState.CommitIndex {
 		return fmt.Errorf("%w: last=%d commit=%d applied=%d", ErrInvalidState, lastIndex, state.HardState.CommitIndex, c.AppliedIndex)
 	}
 	return nil
@@ -121,6 +145,8 @@ const (
 	RequestVoteResponse
 	AppendEntries
 	AppendEntriesResponse
+	InstallSnapshot
+	InstallSnapshotResponse
 )
 
 func (t MessageType) String() string {
@@ -133,6 +159,10 @@ func (t MessageType) String() string {
 		return "append_entries"
 	case AppendEntriesResponse:
 		return "append_entries_response"
+	case InstallSnapshot:
+		return "install_snapshot"
+	case InstallSnapshotResponse:
+		return "install_snapshot_response"
 	default:
 		return "unknown"
 	}
@@ -159,6 +189,7 @@ type Message struct {
 	Success      bool
 	MatchIndex   uint64
 	RejectHint   uint64
+	Snapshot     Snapshot
 }
 
 // InputKind identifies an external stimulus accepted by Node.Step.
@@ -170,14 +201,17 @@ const (
 	InputMessage
 	InputProposal
 	InputPersisted
+	InputSnapshot
 )
 
 // Input is one deterministic state-machine stimulus.
 type Input struct {
-	Kind       InputKind
-	Message    Message
-	Data       []byte
-	WriteToken uint64
+	Kind          InputKind
+	Message       Message
+	Data          []byte
+	WriteToken    uint64
+	SnapshotIndex uint64
+	SnapshotData  []byte
 }
 
 // EffectKind identifies an ordered action requested by a Node. EffectPersist,
@@ -191,6 +225,7 @@ const (
 	EffectResetElectionTimer
 	EffectResetHeartbeatTimer
 	EffectApply
+	EffectInstallSnapshot
 )
 
 // Effect is one ordered action produced by Node.Step or Node.Start.
@@ -200,6 +235,7 @@ type Effect struct {
 	State      PersistentState
 	Message    Message
 	Entry      Entry
+	Snapshot   Snapshot
 }
 
 // Status is a deterministic, read-only node snapshot for tracing, invariant
@@ -214,6 +250,7 @@ type Status struct {
 	AppliedIndex        uint64
 	LastLogIndex        uint64
 	LastLogTerm         uint64
+	Snapshot            Snapshot
 	Log                 []Entry
 	ElectionVotes       []NodeID
 	AwaitingPersistence bool
@@ -223,6 +260,12 @@ type Status struct {
 func cloneEntry(entry Entry) Entry {
 	entry.Data = slices.Clone(entry.Data)
 	return entry
+}
+
+func cloneSnapshot(snapshot Snapshot) Snapshot {
+	snapshot.Members = slices.Clone(snapshot.Members)
+	snapshot.Data = slices.Clone(snapshot.Data)
+	return snapshot
 }
 
 func cloneEntries(entries []Entry) []Entry {
@@ -237,6 +280,7 @@ func cloneEntries(entries []Entry) []Entry {
 // function.
 func CloneMessage(message Message) Message {
 	message.Entries = cloneEntries(message.Entries)
+	message.Snapshot = cloneSnapshot(message.Snapshot)
 	return message
 }
 
@@ -250,7 +294,11 @@ func ClonePersistentState(state PersistentState) PersistentState {
 	return cloneState(state)
 }
 
+// CloneSnapshot returns a deep copy.
+func CloneSnapshot(snapshot Snapshot) Snapshot { return cloneSnapshot(snapshot) }
+
 func cloneState(state PersistentState) PersistentState {
+	state.Snapshot = cloneSnapshot(state.Snapshot)
 	state.Log = cloneEntries(state.Log)
 	return state
 }

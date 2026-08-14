@@ -52,7 +52,12 @@ func New(config Config, state PersistentState) (*Node, error) {
 // but not durably applied entries are re-emitted before the election timer is
 // armed.
 func (n *Node) Start() []Effect {
-	effects := n.applyCommitted()
+	var effects []Effect
+	if n.applied < n.state.Snapshot.LastIncludedIndex {
+		n.applied = n.state.Snapshot.LastIncludedIndex
+		effects = append(effects, Effect{Kind: EffectInstallSnapshot, Snapshot: cloneSnapshot(n.state.Snapshot)})
+	}
+	effects = append(effects, n.applyCommitted()...)
 	effects = append(effects, Effect{Kind: EffectResetElectionTimer})
 	return effects
 }
@@ -75,7 +80,7 @@ func (n *Node) Step(input Input) ([]Effect, error) {
 		if n.state.HardState.CurrentTerm == math.MaxUint64 {
 			err = ErrTermExhausted
 		} else {
-			dirty, effects = n.startElection()
+			dirty, effects, err = n.startElection()
 		}
 	case InputHeartbeatTimeout:
 		if n.role == Leader {
@@ -88,12 +93,31 @@ func (n *Node) Step(input Input) ([]Effect, error) {
 		if n.role != Leader {
 			return nil, ErrNotLeader
 		}
+		if n.lastIndex() == math.MaxUint64 {
+			return nil, ErrIndexExhausted
+		}
 		entry := Entry{Index: n.lastIndex() + 1, Term: n.state.HardState.CurrentTerm, Type: EntryCommand, Data: slices.Clone(input.Data)}
 		n.state.Log = append(n.state.Log, entry)
 		n.matchIndex[n.id] = entry.Index
 		dirty = true
 		effects = append(effects, n.advanceCommit()...)
 		effects = append(effects, n.broadcastAppend()...)
+	case InputSnapshot:
+		index := input.SnapshotIndex
+		if index == 0 || index <= n.state.Snapshot.LastIncludedIndex || index > n.applied || index > n.state.HardState.CommitIndex {
+			return nil, fmt.Errorf("%w: snapshot index %d", ErrInvalidInput, index)
+		}
+		term := n.termAt(index)
+		if term == 0 {
+			return nil, fmt.Errorf("%w: snapshot boundary %d has no term", ErrInvalidInput, index)
+		}
+		var suffix []Entry
+		if index < math.MaxUint64 {
+			suffix = n.entriesFrom(index + 1)
+		}
+		n.state.Snapshot = Snapshot{LastIncludedIndex: index, LastIncludedTerm: term, Members: slices.Clone(n.members), Data: slices.Clone(input.SnapshotData)}
+		n.state.Log = suffix
+		dirty = true
 	default:
 		err = fmt.Errorf("%w: kind %d", ErrInvalidInput, input.Kind)
 	}
@@ -121,6 +145,7 @@ func (n *Node) Status() Status {
 		AppliedIndex:        n.applied,
 		LastLogIndex:        n.lastIndex(),
 		LastLogTerm:         n.lastTerm(),
+		Snapshot:            cloneSnapshot(n.state.Snapshot),
 		Log:                 cloneEntries(n.state.Log),
 		ElectionVotes:       slices.Clone(n.electionVotes),
 		AwaitingPersistence: n.pending != nil,
@@ -140,7 +165,10 @@ func (n *Node) acknowledgePersistence(token uint64) ([]Effect, error) {
 	return effects, nil
 }
 
-func (n *Node) startElection() (bool, []Effect) {
+func (n *Node) startElection() (bool, []Effect, error) {
+	if len(n.members) == 1 && n.lastIndex() == math.MaxUint64 {
+		return false, nil, ErrIndexExhausted
+	}
 	n.role = Candidate
 	n.leader = ""
 	n.state.HardState.CurrentTerm++
@@ -152,8 +180,12 @@ func (n *Node) startElection() (bool, []Effect) {
 	n.appendSequence = nil
 	effects := []Effect{{Kind: EffectResetElectionTimer}}
 	if n.hasQuorum(1) {
-		effects = append(effects, n.becomeLeader()...)
-		return true, effects
+		leaderEffects, err := n.becomeLeader()
+		if err != nil {
+			return false, nil, err
+		}
+		effects = append(effects, leaderEffects...)
+		return true, effects, nil
 	}
 	for _, member := range n.members {
 		if member == n.id {
@@ -168,14 +200,14 @@ func (n *Node) startElection() (bool, []Effect) {
 			LastLogTerm:  n.lastTerm(),
 		}})
 	}
-	return true, effects
+	return true, effects, nil
 }
 
 func (n *Node) stepMessage(message Message) (bool, []Effect, error) {
 	if message.To != n.id || message.From == "" || message.From == n.id || !slices.Contains(n.members, message.From) {
 		return false, nil, fmt.Errorf("%w: invalid route %q -> %q", ErrInvalidInput, message.From, message.To)
 	}
-	if message.Type < RequestVote || message.Type > AppendEntriesResponse {
+	if message.Type < RequestVote || message.Type > InstallSnapshotResponse {
 		return false, nil, fmt.Errorf("%w: message type %d", ErrInvalidInput, message.Type)
 	}
 
@@ -190,13 +222,19 @@ func (n *Node) stepMessage(message Message) (bool, []Effect, error) {
 		changed, effects := n.handleRequestVote(message)
 		return dirty || changed, effects, nil
 	case RequestVoteResponse:
-		changed, effects := n.handleRequestVoteResponse(message)
-		return dirty || changed, effects, nil
+		changed, effects, err := n.handleRequestVoteResponse(message)
+		return dirty || changed, effects, err
 	case AppendEntries:
 		changed, effects := n.handleAppendEntries(message)
 		return dirty || changed, effects, nil
 	case AppendEntriesResponse:
 		changed, effects := n.handleAppendEntriesResponse(message)
+		return dirty || changed, effects, nil
+	case InstallSnapshot:
+		changed, effects := n.handleInstallSnapshot(message)
+		return dirty || changed, effects, nil
+	case InstallSnapshotResponse:
+		changed, effects := n.handleInstallSnapshotResponse(message)
 		return dirty || changed, effects, nil
 	default:
 		return dirty, nil, nil
@@ -228,21 +266,25 @@ func (n *Node) handleRequestVote(message Message) (bool, []Effect) {
 	return dirty, effects
 }
 
-func (n *Node) handleRequestVoteResponse(message Message) (bool, []Effect) {
+func (n *Node) handleRequestVoteResponse(message Message) (bool, []Effect, error) {
 	if n.role != Candidate || message.Term != n.state.HardState.CurrentTerm || !message.VoteGranted {
-		return false, nil
+		return false, nil, nil
 	}
 	if _, exists := n.votes[message.From]; exists {
-		return false, nil
+		return false, nil, nil
 	}
 	n.votes[message.From] = struct{}{}
 	if !n.hasQuorum(len(n.votes)) {
-		return false, nil
+		return false, nil, nil
 	}
-	return true, n.becomeLeader()
+	effects, err := n.becomeLeader()
+	return err == nil, effects, err
 }
 
-func (n *Node) becomeLeader() []Effect {
+func (n *Node) becomeLeader() ([]Effect, error) {
+	if n.lastIndex() == math.MaxUint64 {
+		return nil, ErrIndexExhausted
+	}
 	n.role = Leader
 	n.leader = n.id
 	n.electionVotes = make([]NodeID, 0, len(n.votes))
@@ -266,40 +308,56 @@ func (n *Node) becomeLeader() []Effect {
 	effects := []Effect{{Kind: EffectResetHeartbeatTimer}}
 	effects = append(effects, n.advanceCommit()...)
 	effects = append(effects, n.broadcastAppend()...)
-	return effects
+	return effects, nil
 }
 
 func (n *Node) handleAppendEntries(message Message) (bool, []Effect) {
 	if message.Term < n.state.HardState.CurrentTerm {
-		return false, []Effect{{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, n.lastIndex()+1)}}
+		return false, []Effect{{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, nextIndexAfter(n.lastIndex()))}}
 	}
 	if n.role != Follower || n.leader != message.From {
 		n.becomeFollower(message.Term, message.From)
 	}
 	effects := []Effect{{Kind: EffectResetElectionTimer}}
-	if n.termAt(message.PrevLogIndex) != message.PrevLogTerm {
-		rejectHint := min(message.PrevLogIndex, n.lastIndex()+1)
+	if message.PrevLogIndex < n.state.Snapshot.LastIncludedIndex || n.termAt(message.PrevLogIndex) != message.PrevLogTerm {
+		rejectHint := min(message.PrevLogIndex, nextIndexAfter(n.lastIndex()))
+		if message.PrevLogIndex < n.state.Snapshot.LastIncludedIndex {
+			rejectHint = nextIndexAfter(n.state.Snapshot.LastIncludedIndex)
+		}
 		if rejectHint == 0 {
 			rejectHint = 1
 		}
 		effects = append(effects, Effect{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, rejectHint)})
 		return false, effects
 	}
+	if uint64(len(message.Entries)) > math.MaxUint64-message.PrevLogIndex {
+		effects = append(effects, Effect{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, nextIndexAfter(n.lastIndex()))})
+		return false, effects
+	}
+	previousTerm := message.PrevLogTerm
+	for offset, incoming := range message.Entries {
+		index := message.PrevLogIndex + uint64(offset) + 1
+		if incoming.Index != index || incoming.Term == 0 || incoming.Term > message.Term || incoming.Term < previousTerm || incoming.Type < EntryNoop || incoming.Type > EntryCommand {
+			effects = append(effects, Effect{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, index)})
+			return false, effects
+		}
+		previousTerm = incoming.Term
+	}
 
 	dirty := false
 	for offset, incoming := range message.Entries {
 		index := message.PrevLogIndex + uint64(offset) + 1
-		if incoming.Index != index || incoming.Term == 0 || incoming.Type == 0 {
-			effects = append(effects, Effect{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, index)})
-			return false, effects
-		}
 		if index <= n.lastIndex() {
 			if n.termAt(index) == incoming.Term {
 				continue
 			}
-			n.state.Log = n.state.Log[:index-1]
+			n.truncateFrom(index)
 		}
 		if index > n.lastIndex() {
+			if index != nextIndexAfter(n.lastIndex()) {
+				effects = append(effects, Effect{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, nextIndexAfter(n.lastIndex()))})
+				return dirty, effects
+			}
 			n.state.Log = append(n.state.Log, cloneEntry(incoming))
 			dirty = true
 		}
@@ -311,6 +369,56 @@ func (n *Node) handleAppendEntries(message Message) (bool, []Effect) {
 	}
 	match := message.PrevLogIndex + uint64(len(message.Entries))
 	effects = append(effects, Effect{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, true, match, 0)})
+	return dirty, effects
+}
+
+func (n *Node) handleInstallSnapshot(message Message) (bool, []Effect) {
+	if message.Term < n.state.HardState.CurrentTerm {
+		return false, []Effect{{Kind: EffectSend, Message: n.snapshotResponse(message.From, message.Sequence, false, n.state.Snapshot.LastIncludedIndex)}}
+	}
+	if n.role != Follower || n.leader != message.From {
+		n.becomeFollower(message.Term, message.From)
+	}
+	effects := []Effect{{Kind: EffectResetElectionTimer}}
+	snapshot := message.Snapshot
+	if snapshot.LastIncludedIndex == 0 || snapshot.LastIncludedTerm == 0 || snapshot.LastIncludedTerm > message.Term || !slices.Equal(snapshot.Members, n.members) {
+		effects = append(effects, Effect{Kind: EffectSend, Message: n.snapshotResponse(message.From, message.Sequence, false, n.state.Snapshot.LastIncludedIndex)})
+		return false, effects
+	}
+	if snapshot.LastIncludedIndex <= n.state.HardState.CommitIndex {
+		effects = append(effects, Effect{Kind: EffectSend, Message: n.snapshotResponse(message.From, message.Sequence, true, snapshot.LastIncludedIndex)})
+		return false, effects
+	}
+	var suffix []Entry
+	if n.termAt(snapshot.LastIncludedIndex) == snapshot.LastIncludedTerm {
+		if snapshot.LastIncludedIndex < math.MaxUint64 {
+			suffix = n.entriesFrom(snapshot.LastIncludedIndex + 1)
+		}
+	}
+	n.state.Snapshot = cloneSnapshot(snapshot)
+	n.state.Log = suffix
+	n.state.HardState.CommitIndex = snapshot.LastIncludedIndex
+	n.applied = snapshot.LastIncludedIndex
+	effects = append(effects,
+		Effect{Kind: EffectInstallSnapshot, Snapshot: cloneSnapshot(snapshot)},
+		Effect{Kind: EffectSend, Message: n.snapshotResponse(message.From, message.Sequence, true, snapshot.LastIncludedIndex)},
+	)
+	return true, effects
+}
+
+func (n *Node) handleInstallSnapshotResponse(message Message) (bool, []Effect) {
+	if n.role != Leader || message.Term != n.state.HardState.CurrentTerm || !message.Success {
+		return false, nil
+	}
+	if message.MatchIndex > n.matchIndex[message.From] {
+		n.matchIndex[message.From] = min(message.MatchIndex, n.lastIndex())
+		n.nextIndex[message.From] = nextIndexAfter(n.matchIndex[message.From])
+	}
+	effects := n.advanceCommit()
+	dirty := len(effects) > 0
+	if n.matchIndex[message.From] < n.lastIndex() {
+		effects = append(effects, Effect{Kind: EffectSend, Message: n.appendFor(message.From)})
+	}
 	return dirty, effects
 }
 
@@ -334,11 +442,11 @@ func (n *Node) handleAppendEntriesResponse(message Message) (bool, []Effect) {
 	}
 	if message.MatchIndex > n.matchIndex[message.From] {
 		n.matchIndex[message.From] = min(message.MatchIndex, n.lastIndex())
-		n.nextIndex[message.From] = n.matchIndex[message.From] + 1
+		n.nextIndex[message.From] = nextIndexAfter(n.matchIndex[message.From])
 	}
 	effects := n.advanceCommit()
 	dirty := len(effects) > 0
-	if n.nextIndex[message.From] <= n.lastIndex() {
+	if n.matchIndex[message.From] < n.lastIndex() {
 		effects = append(effects, Effect{Kind: EffectSend, Message: n.appendFor(message.From)})
 	}
 	return dirty, effects
@@ -368,7 +476,10 @@ func (n *Node) applyCommitted() []Effect {
 	var effects []Effect
 	for n.applied < n.state.HardState.CommitIndex {
 		n.applied++
-		entry := n.state.Log[n.applied-1]
+		entry, exists := n.entryAt(n.applied)
+		if !exists {
+			panic(fmt.Sprintf("raft: committed entry %d is unavailable after snapshot %d", n.applied, n.state.Snapshot.LastIncludedIndex))
+		}
 		effects = append(effects, Effect{Kind: EffectApply, Entry: cloneEntry(entry)})
 	}
 	return effects
@@ -386,14 +497,29 @@ func (n *Node) broadcastAppend() []Effect {
 
 func (n *Node) appendFor(member NodeID) Message {
 	n.appendSequence[member]++
+	if n.matchIndex[member] == math.MaxUint64 {
+		return Message{
+			Type:         AppendEntries,
+			From:         n.id,
+			To:           member,
+			Term:         n.state.HardState.CurrentTerm,
+			Sequence:     n.appendSequence[member],
+			PrevLogIndex: math.MaxUint64,
+			PrevLogTerm:  n.termAt(math.MaxUint64),
+			LeaderCommit: n.state.HardState.CommitIndex,
+		}
+	}
 	next := n.nextIndex[member]
 	if next == 0 {
-		next = n.lastIndex() + 1
+		next = nextIndexAfter(n.lastIndex())
+	}
+	if next <= n.state.Snapshot.LastIncludedIndex {
+		return Message{Type: InstallSnapshot, From: n.id, To: member, Term: n.state.HardState.CurrentTerm, Sequence: n.appendSequence[member], Snapshot: cloneSnapshot(n.state.Snapshot)}
 	}
 	prev := next - 1
 	var entries []Entry
 	if next <= n.lastIndex() {
-		entries = cloneEntries(n.state.Log[next-1:])
+		entries = n.entriesFrom(next)
 	}
 	return Message{
 		Type:         AppendEntries,
@@ -406,6 +532,10 @@ func (n *Node) appendFor(member NodeID) Message {
 		Entries:      entries,
 		LeaderCommit: n.state.HardState.CommitIndex,
 	}
+}
+
+func (n *Node) snapshotResponse(to NodeID, sequence uint64, success bool, matchIndex uint64) Message {
+	return Message{Type: InstallSnapshotResponse, From: n.id, To: to, Term: n.state.HardState.CurrentTerm, Sequence: sequence, Success: success, MatchIndex: matchIndex}
 }
 
 func (n *Node) appendResponse(to NodeID, sequence uint64, success bool, matchIndex, rejectHint uint64) Message {
@@ -441,7 +571,7 @@ func (n *Node) candidateLogIsUpToDate(index, term uint64) bool {
 }
 
 func (n *Node) lastIndex() uint64 {
-	return uint64(len(n.state.Log))
+	return n.state.Snapshot.LastIncludedIndex + uint64(len(n.state.Log))
 }
 
 func (n *Node) lastTerm() uint64 {
@@ -449,12 +579,56 @@ func (n *Node) lastTerm() uint64 {
 }
 
 func (n *Node) termAt(index uint64) uint64 {
-	if index == 0 || index > uint64(len(n.state.Log)) {
+	if index == 0 {
 		return 0
 	}
-	return n.state.Log[index-1].Term
+	if index == n.state.Snapshot.LastIncludedIndex {
+		return n.state.Snapshot.LastIncludedTerm
+	}
+	entry, exists := n.entryAt(index)
+	if !exists {
+		return 0
+	}
+	return entry.Term
+}
+
+func (n *Node) entryAt(index uint64) (Entry, bool) {
+	boundary := n.state.Snapshot.LastIncludedIndex
+	if index <= boundary || index > n.lastIndex() {
+		return Entry{}, false
+	}
+	return n.state.Log[index-boundary-1], true
+}
+
+func (n *Node) entriesFrom(index uint64) []Entry {
+	boundary := n.state.Snapshot.LastIncludedIndex
+	if index <= boundary {
+		return cloneEntries(n.state.Log)
+	}
+	if index > n.lastIndex() {
+		return nil
+	}
+	return cloneEntries(n.state.Log[index-boundary-1:])
+}
+
+func (n *Node) truncateFrom(index uint64) {
+	boundary := n.state.Snapshot.LastIncludedIndex
+	if index <= boundary {
+		n.state.Log = nil
+		return
+	}
+	if index <= n.lastIndex() {
+		n.state.Log = n.state.Log[:index-boundary-1]
+	}
 }
 
 func (n *Node) hasQuorum(count int) bool {
 	return count >= len(n.members)/2+1
+}
+
+func nextIndexAfter(index uint64) uint64 {
+	if index == math.MaxUint64 {
+		return math.MaxUint64
+	}
+	return index + 1
 }

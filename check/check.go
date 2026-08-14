@@ -10,13 +10,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
 	"github.com/aminkbi/d-raft/raft"
 )
 
-const SchemaVersion = "d-raft.check/v1"
+const (
+	SchemaV1      = "d-raft.check/v1"
+	SchemaVersion = "d-raft.check/v2"
+)
 
 const (
 	ElectionSafety       = "raft/election-safety"
@@ -30,6 +34,7 @@ const (
 	CommitMonotonic      = "raft/commit-monotonic"
 	AppliedConflict      = "raft/applied-conflict"
 	AppliedMonotonic     = "raft/applied-monotonic"
+	SnapshotConflict     = "raft/snapshot-conflict"
 )
 
 // NodeObservation combines independent durable/application state with an
@@ -106,6 +111,29 @@ func ValidateViolation(violation Violation) error {
 	return nil
 }
 
+// ValidateViolationForSchema additionally verifies that an invariant ID belongs
+// to the declared built-in checker vocabulary.
+func ValidateViolationForSchema(schema string, violation Violation) error {
+	if err := ValidateViolation(violation); err != nil {
+		return err
+	}
+	if !violationSupported(schema, violation.ID) {
+		return fmt.Errorf("check: violation %q is not defined by %s", violation.ID, schema)
+	}
+	return nil
+}
+
+func violationSupported(schema, id string) bool {
+	switch id {
+	case ElectionSafety, ElectionCertificate, DurableTermMonotonic, DurableDoubleVote, VolatileDurableMatch, LogMatching, LeaderCompleteness, CommittedConflict, CommitMonotonic, AppliedConflict, AppliedMonotonic:
+		return schema == SchemaV1 || schema == SchemaVersion
+	case SnapshotConflict:
+		return schema == SchemaVersion
+	default:
+		return false
+	}
+}
+
 type entryWitness struct {
 	Node       raft.NodeID `json:"node"`
 	Entry      raft.Entry  `json:"entry"`
@@ -124,7 +152,13 @@ type Checker struct {
 	appliedIndexes map[raft.NodeID]uint64
 	committed      map[uint64]entryWitness
 	applied        map[uint64]entryWitness
+	snapshots      map[uint64]snapshotWitness
 	violations     []Violation
+}
+
+type snapshotWitness struct {
+	Node     raft.NodeID   `json:"node"`
+	Snapshot raft.Snapshot `json:"snapshot"`
 }
 
 // New returns a checker for fixed members.
@@ -141,6 +175,7 @@ func New(members []raft.NodeID) *Checker {
 		appliedIndexes: make(map[raft.NodeID]uint64),
 		committed:      make(map[uint64]entryWitness),
 		applied:        make(map[uint64]entryWitness),
+		snapshots:      make(map[uint64]snapshotWitness),
 	}
 }
 
@@ -155,6 +190,7 @@ func (c *Checker) Observe(observation Observation) []Violation {
 		c.checkDurableHistory(observation.At, node)
 		c.checkCommittedHistory(observation.At, node)
 		c.checkAppliedHistory(observation.At, node)
+		c.checkSnapshotHistory(observation.At, node)
 	}
 	c.checkLogs(observation.At, nodes)
 	for _, node := range nodes {
@@ -205,13 +241,30 @@ func (c *Checker) checkCommittedHistory(at time.Duration, node NodeObservation) 
 	if commit > c.commitIndexes[node.ID] {
 		c.commitIndexes[node.ID] = commit
 	}
-	for index := uint64(1); index <= commit && index <= uint64(len(node.Durable.Log)); index++ {
-		entry := node.Durable.Log[index-1]
+	for _, entry := range node.Durable.Log {
+		index := entry.Index
+		if index > commit {
+			break
+		}
 		if previous, exists := c.committed[index]; exists && !entriesEqual(previous.Entry, entry) {
 			c.add(at, CommittedConflict, []raft.NodeID{previous.Node, node.ID}, map[string]any{"index": index, "first": previous, "second": entryWitness{Node: node.ID, Entry: entry}})
 		} else if !exists {
 			c.committed[index] = entryWitness{Node: node.ID, Entry: raft.CloneEntry(entry), CommitTerm: node.Durable.HardState.CurrentTerm}
 		}
+	}
+}
+
+func (c *Checker) checkSnapshotHistory(at time.Duration, node NodeObservation) {
+	snapshot := node.Durable.Snapshot
+	if snapshot.LastIncludedIndex == 0 {
+		return
+	}
+	if previous, exists := c.snapshots[snapshot.LastIncludedIndex]; exists {
+		if previous.Snapshot.LastIncludedTerm != snapshot.LastIncludedTerm || !slices.Equal(previous.Snapshot.Members, snapshot.Members) || !slices.Equal(previous.Snapshot.Data, snapshot.Data) {
+			c.add(at, SnapshotConflict, []raft.NodeID{previous.Node, node.ID}, map[string]any{"index": snapshot.LastIncludedIndex, "first": previous, "second": snapshotWitness{Node: node.ID, Snapshot: raft.CloneSnapshot(snapshot)}})
+		}
+	} else {
+		c.snapshots[snapshot.LastIncludedIndex] = snapshotWitness{Node: node.ID, Snapshot: raft.CloneSnapshot(snapshot)}
 	}
 }
 
@@ -234,17 +287,33 @@ func (c *Checker) checkAppliedHistory(at time.Duration, node NodeObservation) {
 func (c *Checker) checkLogs(at time.Duration, nodes []NodeObservation) {
 	for leftIndex, left := range nodes {
 		for _, right := range nodes[leftIndex+1:] {
-			limit := min(len(left.Durable.Log), len(right.Durable.Log))
-			for index := 0; index < limit; index++ {
-				leftEntry, rightEntry := left.Durable.Log[index], right.Durable.Log[index]
-				if leftEntry.Term != rightEntry.Term {
-					continue
-				}
-				for prefix := 0; prefix <= index; prefix++ {
-					if !entriesEqual(left.Durable.Log[prefix], right.Durable.Log[prefix]) {
-						c.add(at, LogMatching, []raft.NodeID{left.ID, right.ID}, map[string]any{"matching_index": index + 1, "conflicting_index": prefix + 1, "term": leftEntry.Term})
-						break
+			boundary := max(left.Durable.Snapshot.LastIncludedIndex, right.Durable.Snapshot.LastIncludedIndex)
+			if boundary == math.MaxUint64 {
+				continue
+			}
+			start := boundary + 1
+			limit := min(stateLastIndex(left.Durable), stateLastIndex(right.Durable))
+			if start > limit {
+				continue
+			}
+			for index := start; ; index++ {
+				leftEntry, leftOK := stateEntryAt(left.Durable, index)
+				rightEntry, rightOK := stateEntryAt(right.Durable, index)
+				if leftOK && rightOK && leftEntry.Term == rightEntry.Term {
+					for prefix := start; ; prefix++ {
+						leftPrefix, leftExists := stateEntryAt(left.Durable, prefix)
+						rightPrefix, rightExists := stateEntryAt(right.Durable, prefix)
+						if !leftExists || !rightExists || !entriesEqual(leftPrefix, rightPrefix) {
+							c.add(at, LogMatching, []raft.NodeID{left.ID, right.ID}, map[string]any{"matching_index": index, "conflicting_index": prefix, "term": leftEntry.Term})
+							break
+						}
+						if prefix == index {
+							break
+						}
 					}
+				}
+				if index == limit {
+					break
 				}
 			}
 		}
@@ -271,11 +340,47 @@ func (c *Checker) checkLeader(at time.Duration, node NodeObservation, nodes []No
 		if status.Term < committed.CommitTerm {
 			continue
 		}
-		if index > uint64(len(status.Log)) || !entriesEqual(status.Log[index-1], committed.Entry) {
+		if index <= status.Snapshot.LastIncludedIndex {
+			continue
+		}
+		entry, exists := statusEntryAt(status, index)
+		if !exists || !entriesEqual(entry, committed.Entry) {
 			c.add(at, LeaderCompleteness, []raft.NodeID{node.ID, committed.Node}, map[string]any{"term": status.Term, "index": index, "committed": committed})
 		}
 	}
 	_ = nodes
+}
+
+func stateLastIndex(state raft.PersistentState) uint64 {
+	boundary := state.Snapshot.LastIncludedIndex
+	if uint64(len(state.Log)) > math.MaxUint64-boundary {
+		return math.MaxUint64
+	}
+	return boundary + uint64(len(state.Log))
+}
+
+func stateEntryAt(state raft.PersistentState, index uint64) (raft.Entry, bool) {
+	boundary := state.Snapshot.LastIncludedIndex
+	if index <= boundary {
+		return raft.Entry{}, false
+	}
+	offset := index - boundary - 1
+	if offset >= uint64(len(state.Log)) {
+		return raft.Entry{}, false
+	}
+	return state.Log[offset], true
+}
+
+func statusEntryAt(status *raft.Status, index uint64) (raft.Entry, bool) {
+	boundary := status.Snapshot.LastIncludedIndex
+	if index <= boundary {
+		return raft.Entry{}, false
+	}
+	offset := index - boundary - 1
+	if offset >= uint64(len(status.Log)) {
+		return raft.Entry{}, false
+	}
+	return status.Log[offset], true
 }
 
 func (c *Checker) add(at time.Duration, id string, nodes []raft.NodeID, evidence any) {

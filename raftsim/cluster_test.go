@@ -3,6 +3,7 @@ package raftsim
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -230,6 +231,161 @@ func TestClusterRejectsSpoofedTransportIdentity(t *testing.T) {
 	}
 	if _, err := cluster.RunUntil(10 * time.Millisecond); !errors.Is(err, ErrTransportIdentity) {
 		t.Fatalf("transport error = %v", err)
+	}
+}
+
+func TestClusterPersistsLocalSnapshotAndCompacts(t *testing.T) {
+	t.Parallel()
+
+	cluster := mustCluster(t, singleNodeCrashConfig())
+	runUntil(t, cluster, 40*time.Millisecond)
+	if err := cluster.Propose([]byte("one")); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+30*time.Millisecond)
+	if err := cluster.Snapshot("a", []byte("state@2")); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+20*time.Millisecond)
+	store, err := cluster.Store("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.State.Snapshot.LastIncludedIndex != 2 || len(store.State.Log) != 0 || store.AppliedIndex != 2 || string(store.State.Snapshot.Data) != "state@2" {
+		t.Fatalf("store = %+v", store)
+	}
+	if err := cluster.Crash("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cluster.Restart("a"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := cluster.Status("a")
+	if err != nil || status.Snapshot.LastIncludedIndex != 2 || status.LastLogIndex != 2 {
+		t.Fatalf("restart status=%+v err=%v", status, err)
+	}
+}
+
+func TestQueuedSnapshotKeepsCheckpointBoundary(t *testing.T) {
+	t.Parallel()
+
+	cluster := mustCluster(t, singleNodeCrashConfig())
+	runUntil(t, cluster, 40*time.Millisecond)
+	before, err := cluster.Store("a")
+	if err != nil || before.AppliedIndex != 1 {
+		t.Fatalf("before=%+v err=%v", before, err)
+	}
+	if err := cluster.Propose([]byte("one")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cluster.Snapshot("a", []byte("state@1")); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+30*time.Millisecond)
+	store, err := cluster.Store("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.State.Snapshot.LastIncludedIndex != 1 || string(store.State.Snapshot.Data) != "state@1" || len(store.State.Log) != 1 || store.State.Log[0].Index != 2 || store.AppliedIndex != 2 {
+		t.Fatalf("store = %+v", store)
+	}
+}
+
+func TestSnapshotCrashBoundaries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("before durable completion", func(t *testing.T) {
+		cluster := mustCluster(t, singleNodeCrashConfig())
+		runUntil(t, cluster, 40*time.Millisecond)
+		if err := cluster.Snapshot("a", []byte("state@1")); err != nil {
+			t.Fatal(err)
+		}
+		if err := cluster.Crash("a"); err != nil {
+			t.Fatal(err)
+		}
+		store, _ := cluster.Store("a")
+		if store.State.Snapshot.LastIncludedIndex != 0 {
+			t.Fatalf("snapshot persisted before completion: %+v", store.State.Snapshot)
+		}
+	})
+
+	t.Run("after persistence before acknowledgement", func(t *testing.T) {
+		cluster := mustCluster(t, singleNodeCrashConfig())
+		runUntil(t, cluster, 40*time.Millisecond)
+		if err := cluster.CrashAfterNextPersist("a"); err != nil {
+			t.Fatal(err)
+		}
+		if err := cluster.Snapshot("a", []byte("state@1")); err != nil {
+			t.Fatal(err)
+		}
+		runUntil(t, cluster, cluster.Simulator().Now()+15*time.Millisecond)
+		store, _ := cluster.Store("a")
+		if store.State.Snapshot.LastIncludedIndex != 1 || string(store.State.Snapshot.Data) != "state@1" {
+			t.Fatalf("durable snapshot = %+v", store.State.Snapshot)
+		}
+		if err := cluster.Restart("a"); err != nil {
+			t.Fatal(err)
+		}
+		status, err := cluster.Status("a")
+		if err != nil || status.Snapshot.LastIncludedIndex != 1 {
+			t.Fatalf("status=%+v err=%v", status, err)
+		}
+	})
+}
+
+func TestLaggingFollowerInstallsLeaderSnapshot(t *testing.T) {
+	t.Parallel()
+
+	cluster := mustCluster(t, testConfig("a", "b", "c"))
+	runUntil(t, cluster, 500*time.Millisecond)
+	leader, ok := cluster.Leader()
+	if !ok {
+		t.Fatalf("no leader: %+v", cluster.Statuses())
+	}
+	var lagger raft.NodeID
+	for _, id := range cluster.Members() {
+		if id != leader {
+			lagger = id
+			break
+		}
+	}
+	if err := cluster.Crash(lagger); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"one", "two", "three"} {
+		if err := cluster.Propose([]byte(command)); err != nil {
+			t.Fatal(err)
+		}
+		runUntil(t, cluster, cluster.Simulator().Now()+100*time.Millisecond)
+	}
+	leaderStatus, err := cluster.Status(leader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cluster.Snapshot(leader, []byte("chain@"+fmt.Sprint(leaderStatus.AppliedIndex))); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+20*time.Millisecond)
+	leaderStore, _ := cluster.Store(leader)
+	if leaderStore.State.Snapshot.LastIncludedIndex == 0 {
+		t.Fatal("leader did not compact")
+	}
+	if err := cluster.Restart(lagger); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+2*time.Second)
+	laggerStore, _ := cluster.Store(lagger)
+	if laggerStore.State.Snapshot.LastIncludedIndex != leaderStore.State.Snapshot.LastIncludedIndex || laggerStore.AppliedIndex < leaderStore.State.Snapshot.LastIncludedIndex || laggerStore.InstalledSnapshot.LastIncludedIndex != leaderStore.State.Snapshot.LastIncludedIndex {
+		t.Fatalf("leader=%+v lagger=%+v", leaderStore, laggerStore)
+	}
+	if violations := cluster.Violations(); len(violations) != 0 {
+		t.Fatalf("violations = %+v", violations)
+	}
+	laggerStore.InstalledSnapshot.Members[0] = "mutated"
+	laggerStore.InstalledSnapshot.Data[0] ^= 0xff
+	again, _ := cluster.Store(lagger)
+	if again.InstalledSnapshot.Members[0] == "mutated" || slices.Equal(again.InstalledSnapshot.Data, laggerStore.InstalledSnapshot.Data) {
+		t.Fatal("Store did not deep-clone installed snapshot")
 	}
 }
 

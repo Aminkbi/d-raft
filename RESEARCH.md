@@ -29,7 +29,8 @@ The repository currently contains:
 1. A protocol-neutral, single-threaded discrete-event runtime with stable
    random streams, virtual time, network faults, and ordered observations.
 2. A pure Raft reference state machine implementing elections, heartbeats, log
-   replication, current-term commit, and leader no-op entries.
+   replication, current-term commit, durable snapshots, safe compaction, and
+   leader no-op entries.
 3. A cluster harness with durable stores, explicit persistence acknowledgement,
    input barriers, partitions, process incarnations, and crash/restart.
 4. An independent checker for election safety, certificates, durable votes,
@@ -86,7 +87,7 @@ violation witness.
 - [x] Versioned, self-describing run artifacts and `run`/`replay`/`inspect` CLI
 - [x] Prefix replay and bounded depth-first choice exploration
 - [x] Fingerprint-preserving semantic delta debugging and domain shrinkers
-- [ ] Snapshot installation and safe log compaction
+- [x] Snapshot installation and safe log compaction
 - [ ] Joint-consensus membership changes and learners
 - [ ] Production Raft adapter with declared capability boundaries
 - [ ] Chain-of-Blocks state-machine oracle and seeded mutant corpus
@@ -146,6 +147,10 @@ artifact.
 - Cross-implementation semantics may be narrower than any one implementation's
   feature set.
 - Results from one production adapter or one mutant corpus may not generalize.
+- Opaque application snapshots cannot prove leader completeness for entries
+  below their boundary. The current checker detects conflicting snapshots at
+  an equal boundary but reports no stronger compacted-prefix claim; the planned
+  Chain-of-Blocks oracle supplies independently comparable state commitments.
 
 These limitations must remain explicit in papers, talks, release notes, and
 artifact documentation.
