@@ -2,15 +2,159 @@ package experiment
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/decision"
+	"github.com/aminkbi/d-raft/explore"
 	"github.com/aminkbi/d-raft/raft"
 	"github.com/aminkbi/d-raft/raftsim"
 )
+
+func TestReferenceFrontierIsStableAndIncludesScenarioNamespace(t *testing.T) {
+	t.Parallel()
+
+	config := raftsim.DefaultConfig("a", "b")
+	configuration := artifact.ConfigurationFrom(config)
+	scenario := artifact.Scenario{ID: "frontier", Version: "1", DurationNS: int64(time.Second), MaxSteps: 100,
+		Actions: []artifact.Action{{AtNS: int64(500 * time.Millisecond), Kind: artifact.ActionCrash, Node: "a"}},
+	}
+	run := func(source artifact.Scenario) []byte {
+		t.Helper()
+		prefix := decision.Tape{Schema: decision.SchemaVersion}
+		decider, err := decision.NewPrefixDecider(prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, frontier, err := ExecuteWithFrontier(source, configuration, decider)
+		if !errors.Is(err, decision.ErrOpenChoice) {
+			t.Fatalf("error = %v", err)
+		}
+		if !json.Valid(frontier) {
+			t.Fatalf("invalid frontier %q", frontier)
+		}
+		return frontier
+	}
+	first := run(scenario)
+	if !bytes.Equal(first, run(scenario)) {
+		t.Fatal("identical clean reruns produced different frontiers")
+	}
+	changed := scenario
+	changed.Actions = []artifact.Action{{AtNS: int64(500 * time.Millisecond), Kind: artifact.ActionCrash, Node: "b"}}
+	if bytes.Equal(first, run(changed)) {
+		t.Fatal("scenario namespace was omitted")
+	}
+}
+
+func TestReferenceFrontierCapturesBootstrapContinuation(t *testing.T) {
+	t.Parallel()
+
+	config := raftsim.DefaultConfig("a", "b")
+	configuration := artifact.ConfigurationFrom(config)
+	scenario := artifact.Scenario{ID: "bootstrap-frontier", Version: "1", DurationNS: int64(time.Second), MaxSteps: 100}
+	empty, err := decision.NewPrefixDecider(decision.Tape{Schema: decision.SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, runErr := ExecuteWithFrontier(scenario, configuration, empty)
+	var firstOpen *decision.OpenChoiceError
+	if !errors.As(runErr, &firstOpen) {
+		t.Fatalf("first error = %v", runErr)
+	}
+	selection := decision.Selection{Number: firstOpen.Choice.Min}
+	entry, err := decision.NewEntry(firstOpen.Choice, selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := decision.Tape{Schema: decision.SchemaVersion, Entries: []decision.Entry{entry}}
+	decider, err := decision.NewPrefixDecider(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, frontier, runErr := ExecuteWithFrontier(scenario, configuration, decider)
+	var secondOpen *decision.OpenChoiceError
+	if !errors.As(runErr, &secondOpen) {
+		t.Fatalf("second error = %v", runErr)
+	}
+	var decoded frontierState
+	if err := json.Unmarshal(frontier, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if secondOpen.Choice.ID == firstOpen.Choice.ID || len(decoded.InEvent) != 1 || decoded.InEvent[0].Choice.ID != firstOpen.Choice.ID || decoded.StepsUsed != 0 {
+		t.Fatalf("open=%+v frontier=%+v", secondOpen, decoded)
+	}
+}
+
+func TestReferenceFrontierCapturesMidCallbackOpenChoice(t *testing.T) {
+	t.Parallel()
+
+	config := raftsim.DefaultConfig("a")
+	config.ElectionTimeoutMin = 10 * time.Millisecond
+	config.ElectionTimeoutMax = 10 * time.Millisecond
+	config.HeartbeatInterval = 2 * time.Millisecond
+	configuration := artifact.ConfigurationFrom(config)
+	scenario := artifact.Scenario{ID: "mid-callback", Version: "1", DurationNS: int64(20 * time.Millisecond), MaxSteps: 100}
+	empty, err := decision.NewPrefixDecider(decision.Tape{Schema: decision.SchemaVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, runErr := ExecuteWithFrontier(scenario, configuration, empty)
+	var timerOpen *decision.OpenChoiceError
+	if !errors.As(runErr, &timerOpen) {
+		t.Fatalf("timer error = %v", runErr)
+	}
+	entry, err := decision.NewEntry(timerOpen.Choice, decision.Selection{Number: timerOpen.Choice.Min})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decider, err := decision.NewPrefixDecider(decision.Tape{Schema: decision.SchemaVersion, Entries: []decision.Entry{entry}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, frontier, runErr := ExecuteWithFrontier(scenario, configuration, decider)
+	var storageOpen *decision.OpenChoiceError
+	if !errors.As(runErr, &storageOpen) || storageOpen.Choice.Kind != decision.StorageLatency {
+		t.Fatalf("storage error = %v", runErr)
+	}
+	var decoded frontierState
+	if err := json.Unmarshal(frontier, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.InEvent) != 0 || !bytes.Contains(decoded.PreEvent, []byte(`"kind":"election_timer"`)) {
+		t.Fatalf("frontier does not identify active election event: %s", frontier)
+	}
+}
+
+func TestCachedAndUncachedReferenceExplorationAgree(t *testing.T) {
+	t.Parallel()
+
+	config := raftsim.DefaultConfig("a")
+	config.ElectionTimeoutMin = 10 * time.Millisecond
+	config.ElectionTimeoutMax = 11 * time.Millisecond
+	config.HeartbeatInterval = 2 * time.Millisecond
+	configuration := artifact.ConfigurationFrom(config)
+	scenario := artifact.Scenario{ID: "cache-parity", Version: "1", DurationNS: int64(25 * time.Millisecond), MaxSteps: 100}
+	bounds := explore.Bounds{MaxRuns: 100, MaxDepth: 2, MaxBranchesPerChoice: 2, RangeSamples: 3}
+	plain, err := explore.DFS(func(decider decision.Decider) (artifact.Outcome, error) {
+		return Execute(scenario, configuration, decider)
+	}, bounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached, err := explore.DFSWithCache(func(decider decision.Decider) (artifact.Outcome, []byte, error) {
+		return ExecuteWithFrontier(scenario, configuration, decider)
+	}, bounds, explore.CacheBounds{MaxEntries: 100, MaxBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.ViolatingRuns != cached.ViolatingRuns || (plain.FirstViolation == nil) != (cached.FirstViolation == nil) || plain.Truncated != cached.Truncated {
+		t.Fatalf("plain=%+v cached=%+v", plain, cached)
+	}
+}
 
 func TestScenarioRecordAndReplay(t *testing.T) {
 	t.Parallel()

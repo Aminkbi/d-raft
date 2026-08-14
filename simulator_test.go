@@ -1,11 +1,66 @@
 package sim
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"math"
 	"testing"
 	"time"
 )
+
+func TestCanonicalStateRequiresTagsAndPreservesEqualTimeOrder(t *testing.T) {
+	t.Parallel()
+
+	untagged := New()
+	if _, err := untagged.Schedule(0, func(*Simulator) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := untagged.CanonicalState(); !errors.Is(err, ErrUncacheableState) {
+		t.Fatalf("untagged state error = %v", err)
+	}
+
+	makeState := func(reverse bool) []byte {
+		t.Helper()
+		simulator := New()
+		values := []string{"first", "second"}
+		if reverse {
+			values[0], values[1] = values[1], values[0]
+		}
+		for _, value := range values {
+			data, _ := json.Marshal(map[string]string{"value": value})
+			if _, err := simulator.ScheduleAtTagged(5, EventTag{Kind: EventExternalAction, Data: data}, func(*Simulator) {}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state, err := simulator.CanonicalState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	left := makeState(false)
+	if !bytes.Equal(left, makeState(false)) {
+		t.Fatal("equivalent schedulers encoded differently")
+	}
+	if bytes.Equal(left, makeState(true)) {
+		t.Fatal("equal-time callback order was erased")
+	}
+}
+
+func TestCanonicalStateRejectsTraceSink(t *testing.T) {
+	t.Parallel()
+
+	simulator := New()
+	simulator.SetTraceSink(TraceFunc(func(TraceEvent) {}))
+	if _, err := simulator.CanonicalState(); !errors.Is(err, ErrUncacheableState) {
+		t.Fatalf("trace-backed state error = %v", err)
+	}
+}
 
 func TestSimulatorOrdersByTimeThenInsertion(t *testing.T) {
 	t.Parallel()

@@ -1,8 +1,10 @@
 package sim
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -18,7 +20,53 @@ var (
 	// ErrEventIDExhausted is returned in the practically unreachable case that
 	// all uint64 event identifiers have been allocated.
 	ErrEventIDExhausted = errors.New("sim: event identifier space exhausted")
+	// ErrUncacheableState reports hidden callback or trace-sink behavior.
+	ErrUncacheableState = errors.New("sim: state is not canonically inspectable")
+	// ErrInvalidEventTag reports a malformed canonical callback descriptor.
+	ErrInvalidEventTag = errors.New("sim: invalid event tag")
 )
+
+const CanonicalStateSchema = "d-raft.sim-state/v1"
+
+// EventKind identifies the closed set of callbacks used by the reference
+// experiment executor. EventTag data is a canonical JSON value whose schema
+// is owned by the producer of that kind.
+type EventKind string
+
+const (
+	EventNetworkDelivery   EventKind = "network_delivery"
+	EventStorageCompletion EventKind = "storage_completion"
+	EventPersistenceAck    EventKind = "persistence_ack"
+	EventElectionTimer     EventKind = "election_timer"
+	EventHeartbeatTimer    EventKind = "heartbeat_timer"
+	EventExternalAction    EventKind = "external_action"
+	EventScheduledCrash    EventKind = "scheduled_crash"
+	EventScheduledRestart  EventKind = "scheduled_restart"
+)
+
+// EventTag is the inspectable semantic replacement for an opaque callback.
+type EventTag struct {
+	Kind EventKind       `json:"kind"`
+	Data json.RawMessage `json:"data"`
+}
+
+// PendingEventState is one future callback in execution order.
+type PendingEventState struct {
+	ID    EventID  `json:"id"`
+	AtNS  int64    `json:"at_ns"`
+	Order uint64   `json:"order"`
+	Tag   EventTag `json:"tag"`
+}
+
+// SimulatorState contains every future-relevant scheduler field. Events are
+// sorted by execution order rather than heap layout.
+type SimulatorState struct {
+	Schema    string              `json:"schema"`
+	NowNS     int64               `json:"now_ns"`
+	NextID    EventID             `json:"next_id"`
+	Exhausted bool                `json:"exhausted"`
+	Events    []PendingEventState `json:"events"`
+}
 
 // EventID identifies a pending event. The zero value is never issued.
 type EventID uint64
@@ -89,9 +137,32 @@ func (s *Simulator) Schedule(delay time.Duration, action Action) (EventID, error
 	return s.ScheduleAt(s.clock.now+delay, action)
 }
 
+// ScheduleTagged adds an inspectable callback delay after the current time.
+func (s *Simulator) ScheduleTagged(delay time.Duration, tag EventTag, action Action) (EventID, error) {
+	if delay < 0 {
+		return 0, ErrNegativeTime
+	}
+	if s.clock.now > time.Duration(math.MaxInt64)-delay {
+		return 0, ErrTimeOverflow
+	}
+	return s.ScheduleAtTagged(s.clock.now+delay, tag, action)
+}
+
 // ScheduleAt adds an action at the specified absolute virtual time. Events at
 // the same time execute in the order in which they were scheduled.
 func (s *Simulator) ScheduleAt(when time.Duration, action Action) (EventID, error) {
+	return s.scheduleAt(when, EventTag{}, action)
+}
+
+// ScheduleAtTagged adds an inspectable callback at an absolute virtual time.
+func (s *Simulator) ScheduleAtTagged(when time.Duration, tag EventTag, action Action) (EventID, error) {
+	if err := validateEventTag(tag); err != nil {
+		return 0, err
+	}
+	return s.scheduleAt(when, cloneEventTag(tag), action)
+}
+
+func (s *Simulator) scheduleAt(when time.Duration, tag EventTag, action Action) (EventID, error) {
 	if when < 0 {
 		return 0, ErrNegativeTime
 	}
@@ -114,7 +185,7 @@ func (s *Simulator) ScheduleAt(when time.Duration, action Action) (EventID, erro
 	} else {
 		s.nextID++
 	}
-	event := &scheduledEvent{id: id, when: when, order: uint64(id), action: action}
+	event := &scheduledEvent{id: id, when: when, order: uint64(id), tag: tag, action: action}
 	if s.pending == nil {
 		s.pending = make(map[EventID]*scheduledEvent)
 	}
@@ -129,6 +200,58 @@ func (s *Simulator) ScheduleAt(when time.Duration, action Action) (EventID, erro
 		})
 	}
 	return id, nil
+}
+
+// CanonicalState returns an independent scheduler checkpoint. It refuses to
+// guess the meaning of opaque Action closures.
+func (s *Simulator) CanonicalState() (SimulatorState, error) {
+	if s.trace != nil {
+		return SimulatorState{}, ErrUncacheableState
+	}
+	state := SimulatorState{Schema: CanonicalStateSchema, NowNS: int64(s.clock.now), NextID: s.nextID, Exhausted: s.exhausted}
+	state.Events = make([]PendingEventState, 0, len(s.queue))
+	for _, event := range s.queue {
+		if event.tag.Kind == "" {
+			return SimulatorState{}, ErrUncacheableState
+		}
+		if err := validateEventTag(event.tag); err != nil {
+			return SimulatorState{}, err
+		}
+		state.Events = append(state.Events, PendingEventState{ID: event.id, AtNS: int64(event.when), Order: event.order, Tag: cloneEventTag(event.tag)})
+	}
+	slices.SortFunc(state.Events, func(left, right PendingEventState) int {
+		if left.AtNS < right.AtNS {
+			return -1
+		}
+		if left.AtNS > right.AtNS {
+			return 1
+		}
+		if left.Order < right.Order {
+			return -1
+		}
+		if left.Order > right.Order {
+			return 1
+		}
+		return 0
+	})
+	return state, nil
+}
+
+func validateEventTag(tag EventTag) error {
+	switch tag.Kind {
+	case EventNetworkDelivery, EventStorageCompletion, EventPersistenceAck, EventElectionTimer, EventHeartbeatTimer, EventExternalAction, EventScheduledCrash, EventScheduledRestart:
+	default:
+		return ErrInvalidEventTag
+	}
+	if len(tag.Data) == 0 || !json.Valid(tag.Data) {
+		return ErrInvalidEventTag
+	}
+	return nil
+}
+
+func cloneEventTag(tag EventTag) EventTag {
+	tag.Data = slices.Clone(tag.Data)
+	return tag
 }
 
 // Cancel removes a pending event. It reports false if id is zero, unknown, or

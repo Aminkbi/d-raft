@@ -23,6 +23,8 @@ const (
 	SchemaVersion = "d-raft.check/v3"
 )
 
+const StateSchemaVersion = "d-raft.check-state/v1"
+
 const (
 	ElectionSafety       = "raft/election-safety"
 	ElectionCertificate  = "raft/election-certificate"
@@ -166,6 +168,59 @@ type snapshotWitness struct {
 	Snapshot raft.Snapshot `json:"snapshot"`
 }
 
+// TermLeader is one canonical term-to-leader history entry.
+type TermLeader struct {
+	Term   uint64      `json:"term"`
+	Leader raft.NodeID `json:"leader"`
+}
+
+// NodeTermVote is one canonical durable vote history entry.
+type NodeTermVote struct {
+	Node      raft.NodeID `json:"node"`
+	Term      uint64      `json:"term"`
+	Candidate raft.NodeID `json:"candidate"`
+}
+
+// NodeValue is one canonical entry from a node-keyed uint64 map.
+type NodeValue struct {
+	Node  raft.NodeID `json:"node"`
+	Value uint64      `json:"value"`
+}
+
+// IndexedEntryWitness is one canonical retained log witness.
+type IndexedEntryWitness struct {
+	Index      uint64      `json:"index"`
+	Node       raft.NodeID `json:"node"`
+	Entry      raft.Entry  `json:"entry"`
+	CommitTerm uint64      `json:"commit_term,omitempty"`
+}
+
+// IndexedSnapshotWitness is one canonical retained snapshot witness.
+type IndexedSnapshotWitness struct {
+	Index    uint64        `json:"index"`
+	Node     raft.NodeID   `json:"node"`
+	Snapshot raft.Snapshot `json:"snapshot"`
+}
+
+// CheckerState is a complete, canonical snapshot of a Checker's retained
+// history. It is suitable for deterministic comparison and exploration.
+type CheckerState struct {
+	Schema  string          `json:"schema"`
+	Members []raft.NodeID   `json:"members"`
+	Initial raft.Membership `json:"initial"`
+	Seen    []string        `json:"seen"`
+
+	Leaders        []TermLeader             `json:"leaders"`
+	Votes          []NodeTermVote           `json:"votes"`
+	DurableTerms   []NodeValue              `json:"durable_terms"`
+	CommitIndexes  []NodeValue              `json:"commit_indexes"`
+	AppliedIndexes []NodeValue              `json:"applied_indexes"`
+	Committed      []IndexedEntryWitness    `json:"committed"`
+	Applied        []IndexedEntryWitness    `json:"applied"`
+	Snapshots      []IndexedSnapshotWitness `json:"snapshots"`
+	Violations     []Violation              `json:"violations"`
+}
+
 // New returns a checker for fixed members.
 func New(members []raft.NodeID) *Checker {
 	return NewWithMembership(members, raft.StableMembership(members, nil))
@@ -211,7 +266,94 @@ func (c *Checker) Observe(observation Observation) []Violation {
 			c.checkLeader(observation.At, node, nodes)
 		}
 	}
-	return slices.Clone(c.violations[start:])
+	return cloneViolations(c.violations[start:])
+}
+
+// State returns a complete canonical deep copy of the checker state. Every
+// map is represented as a slice sorted by its key tuple.
+func (c *Checker) State() CheckerState {
+	state := CheckerState{
+		Schema:         StateSchemaVersion,
+		Members:        slices.Clone(c.members),
+		Initial:        raft.CloneMembership(c.initial),
+		Seen:           make([]string, 0, len(c.seen)),
+		Leaders:        make([]TermLeader, 0, len(c.leaders)),
+		Votes:          make([]NodeTermVote, 0),
+		DurableTerms:   sortedNodeValues(c.durableTerms),
+		CommitIndexes:  sortedNodeValues(c.commitIndexes),
+		AppliedIndexes: sortedNodeValues(c.appliedIndexes),
+		Committed:      sortedEntryWitnesses(c.committed),
+		Applied:        sortedEntryWitnesses(c.applied),
+		Snapshots:      sortedSnapshotWitnesses(c.snapshots),
+		Violations:     cloneViolations(c.violations),
+	}
+	for fingerprint := range c.seen {
+		state.Seen = append(state.Seen, fingerprint)
+	}
+	slices.Sort(state.Seen)
+	for term, leader := range c.leaders {
+		state.Leaders = append(state.Leaders, TermLeader{Term: term, Leader: leader})
+	}
+	slices.SortFunc(state.Leaders, func(left, right TermLeader) int { return compareUint64(left.Term, right.Term) })
+	for node, terms := range c.votes {
+		for term, candidate := range terms {
+			state.Votes = append(state.Votes, NodeTermVote{Node: node, Term: term, Candidate: candidate})
+		}
+	}
+	slices.SortFunc(state.Votes, func(left, right NodeTermVote) int {
+		if order := stringCompare(left.Node, right.Node); order != 0 {
+			return order
+		}
+		return compareUint64(left.Term, right.Term)
+	})
+	return state
+}
+
+func sortedNodeValues(values map[raft.NodeID]uint64) []NodeValue {
+	result := make([]NodeValue, 0, len(values))
+	for node, value := range values {
+		result = append(result, NodeValue{Node: node, Value: value})
+	}
+	slices.SortFunc(result, func(left, right NodeValue) int { return stringCompare(left.Node, right.Node) })
+	return result
+}
+
+func sortedEntryWitnesses(witnesses map[uint64]entryWitness) []IndexedEntryWitness {
+	result := make([]IndexedEntryWitness, 0, len(witnesses))
+	for index, witness := range witnesses {
+		result = append(result, IndexedEntryWitness{Index: index, Node: witness.Node, Entry: raft.CloneEntry(witness.Entry), CommitTerm: witness.CommitTerm})
+	}
+	slices.SortFunc(result, func(left, right IndexedEntryWitness) int { return compareUint64(left.Index, right.Index) })
+	return result
+}
+
+func sortedSnapshotWitnesses(witnesses map[uint64]snapshotWitness) []IndexedSnapshotWitness {
+	result := make([]IndexedSnapshotWitness, 0, len(witnesses))
+	for index, witness := range witnesses {
+		result = append(result, IndexedSnapshotWitness{Index: index, Node: witness.Node, Snapshot: raft.CloneSnapshot(witness.Snapshot)})
+	}
+	slices.SortFunc(result, func(left, right IndexedSnapshotWitness) int { return compareUint64(left.Index, right.Index) })
+	return result
+}
+
+func cloneViolations(violations []Violation) []Violation {
+	result := make([]Violation, len(violations))
+	for index, violation := range violations {
+		violation.Nodes = slices.Clone(violation.Nodes)
+		violation.Evidence = slices.Clone(violation.Evidence)
+		result[index] = violation
+	}
+	return result
+}
+
+func compareUint64(left, right uint64) int {
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
 }
 
 func (c *Checker) checkMembershipHistory(at time.Duration, node NodeObservation) {
@@ -254,7 +396,7 @@ func (c *Checker) checkMembershipHistory(at time.Duration, node NodeObservation)
 
 // Violations returns all unique violations observed so far.
 func (c *Checker) Violations() []Violation {
-	return slices.Clone(c.violations)
+	return cloneViolations(c.violations)
 }
 
 func (c *Checker) checkDurableHistory(at time.Duration, node NodeObservation) {

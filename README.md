@@ -55,7 +55,7 @@ plan.
 | `artifact` | Strict, self-describing `d-raft.run/v3` artifacts with scenarios, voter/learner roles, configuration actions, environment, tape, outcome, digest, and witnesses; legacy v1/v2 decoding remains available |
 | `experiment` | Clean-run execution of versioned scenarios and proposal, snapshot, begin/finalize membership, crash/restart, partition, and heal actions |
 | `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
-| `explore` | Clean-rerun bounded DFS over semantic choice prefixes with deterministic suffix completion |
+| `explore` | Clean-rerun bounded DFS with deterministic suffix completion and collision-safe canonical-state pruning |
 | `minimize` | Scenario ddmin, sparse semantic guidance reduction, and domain-aware selection shrinking |
 
 The root module is dependency-free and uses no wall-clock sleeps or background
@@ -162,6 +162,7 @@ go build -o draft ./cmd/draft
 ./draft inspect run.json
 ./draft replay run.json
 ./draft explore --depth 6 --max-runs 1000
+./draft explore --cache=false --depth 6 --max-runs 1000 # matched baseline
 ./draft minimize --out minimized.json failing.json
 ```
 
@@ -177,10 +178,13 @@ The v3 schema and Go APIs can also execute scheduled proposals, snapshots,
 joint membership transitions, partitions, healing, crashes, and restarts,
 including the crash-after-persistence-before-acknowledgement boundary. Role
 changes are limited to a pre-provisioned `Members` universe; they do not perform
-dynamic discovery or process creation. Named CLI fault suites, state caching,
-and production adapters are later milestones. See
+dynamic discovery or process creation. Named CLI fault suites and production
+adapters are later milestones. Canonical reference-state caching is enabled by
+default for `draft explore` and bounded with `--cache-entries` and
+`--cache-bytes`. See
 [ARTIFACTS.md](ARTIFACTS.md), [MEMBERSHIP.md](MEMBERSHIP.md),
-[SNAPSHOTS.md](SNAPSHOTS.md), [EXPLORATION.md](EXPLORATION.md), and
+[SNAPSHOTS.md](SNAPSHOTS.md), [EXPLORATION.md](EXPLORATION.md),
+[CANONICAL_STATE.md](CANONICAL_STATE.md), and
 [MINIMIZATION.md](MINIMIZATION.md).
 
 ## Observational traces

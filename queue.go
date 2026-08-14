@@ -6,6 +6,7 @@ type scheduledEvent struct {
 	id     EventID
 	when   time.Duration
 	order  uint64
+	tag    EventTag
 	action Action
 	index  int
 }

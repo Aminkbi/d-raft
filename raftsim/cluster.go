@@ -24,7 +24,10 @@ var (
 	ErrNoLeader          = errors.New("raftsim: cluster has no unique leader")
 	ErrApplyOrder        = errors.New("raftsim: applied entry is out of order")
 	ErrTransportIdentity = errors.New("raftsim: transport identity mismatch")
+	ErrUncacheableState  = errors.New("raftsim: cluster state is not canonically inspectable")
 )
+
+const CanonicalStateSchema = "d-raft.raftsim-state/v1"
 
 // Config defines a deterministic Raft cluster over a fixed provisioned node
 // universe. Voting and learner roles may change through joint consensus.
@@ -157,18 +160,133 @@ type process struct {
 
 // Cluster owns a deterministic reference Raft execution.
 type Cluster struct {
-	config     Config
-	members    []raft.NodeID
-	simulator  *sim.Simulator
-	router     *sim.Router[Envelope]
-	processes  map[raft.NodeID]*process
-	checker    *check.Checker
-	violations []check.Violation
-	err        error
+	config       Config
+	members      []raft.NodeID
+	simulator    *sim.Simulator
+	router       *sim.Router[Envelope]
+	processes    map[raft.NodeID]*process
+	checker      *check.Checker
+	bootstrapped bool
+	violations   []check.Violation
+	err          error
+}
+
+type queuedInputState struct {
+	Input       raft.Input `json:"input"`
+	Incarnation uint64     `json:"incarnation"`
+	Timer       timerKind  `json:"timer"`
+	Generation  uint64     `json:"generation"`
+}
+
+type processState struct {
+	ID                  raft.NodeID        `json:"id"`
+	Up                  bool               `json:"up"`
+	Incarnation         uint64             `json:"incarnation"`
+	Store               Store              `json:"store"`
+	Random              sim.RandState      `json:"random"`
+	Mailbox             []queuedInputState `json:"mailbox"`
+	ElectionEvent       sim.EventID        `json:"election_event"`
+	ElectionGeneration  uint64             `json:"election_generation"`
+	HeartbeatEvent      sim.EventID        `json:"heartbeat_event"`
+	HeartbeatGeneration uint64             `json:"heartbeat_generation"`
+	PersistEvent        sim.EventID        `json:"persist_event"`
+	PersistAckEvent     sim.EventID        `json:"persist_ack_event"`
+	PersistGeneration   uint64             `json:"persist_generation"`
+	CrashAfterPersist   bool               `json:"crash_after_persist"`
+	SendSequence        uint64             `json:"send_sequence"`
+	Node                *raft.NodeState    `json:"node,omitempty"`
+}
+
+type clusterState struct {
+	Schema       string             `json:"schema"`
+	Bootstrapped bool               `json:"bootstrapped"`
+	Members      []raft.NodeID      `json:"members"`
+	Simulator    sim.SimulatorState `json:"simulator"`
+	Router       sim.RouterState    `json:"router"`
+	Processes    []processState     `json:"processes"`
+	Checker      check.CheckerState `json:"checker"`
+	Violations   []check.Violation  `json:"violations"`
+	Error        string             `json:"error,omitempty"`
+}
+
+// CanonicalState returns exact, map-order-independent bytes for a stable
+// event boundary. It is intentionally scoped to the built-in reference
+// harness and rejects traces, observers, and untagged callbacks.
+func (c *Cluster) CanonicalState() ([]byte, error) {
+	if c == nil || c.config.Trace != nil {
+		return nil, ErrUncacheableState
+	}
+	simulatorState, err := c.simulator.CanonicalState()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUncacheableState, err)
+	}
+	routerState, err := c.router.CanonicalState()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUncacheableState, err)
+	}
+	state := clusterState{
+		Schema: CanonicalStateSchema, Bootstrapped: c.bootstrapped,
+		Members: slices.Clone(c.members), Simulator: simulatorState,
+		Router: routerState, Checker: c.checker.State(),
+		Violations: cloneViolations(c.violations),
+	}
+	if c.err != nil {
+		state.Error = c.err.Error()
+	}
+	state.Processes = make([]processState, 0, len(c.members))
+	for _, id := range c.members {
+		process := c.processes[id]
+		item := processState{
+			ID: id, Up: process.up, Incarnation: process.incarnation,
+			Store: process.store.clone(), Random: process.random.State(),
+			ElectionEvent: process.electionEvent, ElectionGeneration: process.electionGeneration,
+			HeartbeatEvent: process.heartbeatEvent, HeartbeatGeneration: process.heartbeatGeneration,
+			PersistEvent: process.persistEvent, PersistAckEvent: process.persistAckEvent,
+			PersistGeneration: process.persistGeneration, CrashAfterPersist: process.crashAfterPersist,
+			SendSequence: process.sendSequence,
+		}
+		if process.node != nil {
+			node := process.node.State()
+			item.Node = &node
+		}
+		item.Mailbox = make([]queuedInputState, len(process.mailbox))
+		for index, queued := range process.mailbox {
+			item.Mailbox[index] = queuedInputState{Input: cloneInput(queued.input), Incarnation: queued.incarnation, Timer: queued.timer, Generation: queued.generation}
+		}
+		state.Processes = append(state.Processes, item)
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func cloneInput(input raft.Input) raft.Input {
+	input.Message = raft.CloneMessage(input.Message)
+	input.Data = slices.Clone(input.Data)
+	input.SnapshotData = slices.Clone(input.SnapshotData)
+	input.Voters = slices.Clone(input.Voters)
+	input.Learners = slices.Clone(input.Learners)
+	return input
 }
 
 // New creates and starts every configured process.
 func New(config Config) (*Cluster, error) {
+	cluster, err := NewPaused(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := cluster.Bootstrap(); err != nil {
+		return nil, err
+	}
+	return cluster, nil
+}
+
+// NewPaused constructs the reference harness without starting protocol nodes.
+// It exists so exploration can checkpoint the stable boundary before initial
+// timer choices. Call Bootstrap exactly once before ordinary cluster use.
+func NewPaused(config Config) (*Cluster, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
@@ -200,6 +318,7 @@ func New(config Config) (*Cluster, error) {
 	if config.Decider != nil {
 		router.SetDecisionSource(raftNetworkDecisions{decider: config.Decider})
 	}
+	router.SetPacketEventTagger(sim.JSONPacketEventTagger[Envelope])
 	cluster := &Cluster{
 		config:    config,
 		members:   members,
@@ -219,13 +338,24 @@ func New(config Config) (*Cluster, error) {
 			return nil, err
 		}
 	}
-	for _, id := range members {
-		if err := cluster.start(id); err != nil {
-			return nil, err
+	return cluster, nil
+}
+
+// Bootstrap creates and starts all provisioned nodes in canonical member
+// order. A semantic open-choice error leaves the paused cluster inspectable;
+// callers must discard it and clean-rerun with an extended decision prefix.
+func (c *Cluster) Bootstrap() error {
+	if c.bootstrapped {
+		return errors.New("raftsim: cluster already bootstrapped")
+	}
+	for _, id := range c.members {
+		if err := c.start(id); err != nil {
+			return err
 		}
 	}
-	cluster.observe()
-	return cluster, nil
+	c.bootstrapped = true
+	c.observe()
+	return c.err
 }
 
 // Simulator returns the cluster's virtual-time scheduler.
@@ -400,7 +530,17 @@ func (c *Cluster) FinalizeMembershipChangeTo(id raft.NodeID) error {
 
 // Violations returns independent safety violations observed so far.
 func (c *Cluster) Violations() []check.Violation {
-	return slices.Clone(c.violations)
+	return cloneViolations(c.violations)
+}
+
+func cloneViolations(source []check.Violation) []check.Violation {
+	result := make([]check.Violation, len(source))
+	for index, violation := range source {
+		violation.Nodes = slices.Clone(violation.Nodes)
+		violation.Evidence = slices.Clone(violation.Evidence)
+		result[index] = violation
+	}
+	return result
 }
 
 // Step executes one simulator event. A callback failure is returned after the
@@ -523,7 +663,11 @@ func (c *Cluster) Heal() {
 
 // ScheduleCrash schedules a crash relative to the current virtual time.
 func (c *Cluster) ScheduleCrash(delay time.Duration, id raft.NodeID) (sim.EventID, error) {
-	return c.simulator.Schedule(delay, func(*sim.Simulator) {
+	tag, err := eventTag(sim.EventScheduledCrash, map[string]any{"node": id})
+	if err != nil {
+		return 0, err
+	}
+	return c.simulator.ScheduleTagged(delay, tag, func(*sim.Simulator) {
 		if err := c.Crash(id); err != nil {
 			c.fail(err)
 		}
@@ -532,7 +676,11 @@ func (c *Cluster) ScheduleCrash(delay time.Duration, id raft.NodeID) (sim.EventI
 
 // ScheduleRestart schedules a restart relative to the current virtual time.
 func (c *Cluster) ScheduleRestart(delay time.Duration, id raft.NodeID) (sim.EventID, error) {
-	return c.simulator.Schedule(delay, func(*sim.Simulator) {
+	tag, err := eventTag(sim.EventScheduledRestart, map[string]any{"node": id})
+	if err != nil {
+		return 0, err
+	}
+	return c.simulator.ScheduleTagged(delay, tag, func(*sim.Simulator) {
 		if err := c.Restart(id); err != nil {
 			c.fail(err)
 		}
@@ -631,7 +779,11 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 			if err != nil {
 				return err
 			}
-			eventID, err := c.simulator.Schedule(delay, func(*sim.Simulator) {
+			completionTag, err := eventTag(sim.EventStorageCompletion, map[string]any{"node": id, "incarnation": incarnation, "generation": generation, "state": state, "token": token})
+			if err != nil {
+				return err
+			}
+			eventID, err := c.simulator.ScheduleTagged(delay, completionTag, func(*sim.Simulator) {
 				if !process.up || process.incarnation != incarnation || process.persistGeneration != generation {
 					return
 				}
@@ -645,7 +797,12 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 					}
 					return
 				}
-				ackID, scheduleErr := c.simulator.Schedule(0, func(*sim.Simulator) {
+				ackTag, tagErr := eventTag(sim.EventPersistenceAck, map[string]any{"node": id, "incarnation": incarnation, "generation": generation, "token": token})
+				if tagErr != nil {
+					c.fail(tagErr)
+					return
+				}
+				ackID, scheduleErr := c.simulator.ScheduleTagged(0, ackTag, func(*sim.Simulator) {
 					if !process.up || process.incarnation != incarnation || process.persistGeneration != generation {
 						return
 					}
@@ -752,7 +909,11 @@ func (c *Cluster) resetElectionTimer(id raft.NodeID) error {
 			return err
 		}
 	}
-	eventID, err := c.simulator.Schedule(delay, func(*sim.Simulator) {
+	tag, err := eventTag(sim.EventElectionTimer, map[string]any{"node": id, "incarnation": incarnation, "generation": generation})
+	if err != nil {
+		return err
+	}
+	eventID, err := c.simulator.ScheduleTagged(delay, tag, func(*sim.Simulator) {
 		if !process.up || process.incarnation != incarnation || process.electionGeneration != generation || process.node.Status().Role == raft.Leader {
 			return
 		}
@@ -776,7 +937,11 @@ func (c *Cluster) resetHeartbeatTimer(id raft.NodeID) error {
 	process.heartbeatGeneration++
 	generation := process.heartbeatGeneration
 	incarnation := process.incarnation
-	eventID, err := c.simulator.Schedule(c.config.HeartbeatInterval, func(*sim.Simulator) {
+	tag, err := eventTag(sim.EventHeartbeatTimer, map[string]any{"node": id, "incarnation": incarnation, "generation": generation})
+	if err != nil {
+		return err
+	}
+	eventID, err := c.simulator.ScheduleTagged(c.config.HeartbeatInterval, tag, func(*sim.Simulator) {
 		if !process.up || process.incarnation != incarnation || process.heartbeatGeneration != generation || process.node.Status().Role != raft.Leader {
 			return
 		}
@@ -852,6 +1017,14 @@ func (c *Cluster) fail(err error) {
 	if c.err == nil {
 		c.err = err
 	}
+}
+
+func eventTag(kind sim.EventKind, value any) (sim.EventTag, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return sim.EventTag{}, err
+	}
+	return sim.EventTag{Kind: kind, Data: data}, nil
 }
 
 func (c *Cluster) observe() {

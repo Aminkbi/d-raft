@@ -294,6 +294,42 @@ type Status struct {
 	WriteToken          uint64
 }
 
+// NodeIndex is one canonical entry from a node-keyed uint64 map.
+type NodeIndex struct {
+	Node  NodeID `json:"node"`
+	Value uint64 `json:"value"`
+}
+
+// PendingWriteState describes a durable write and the effects it releases.
+type PendingWriteState struct {
+	Token   uint64   `json:"token"`
+	Effects []Effect `json:"effects"`
+}
+
+// NodeState is a complete, canonical snapshot of a Node. Unlike Status, it is
+// intended for deterministic state comparison, hashing, and exploration, so
+// it includes private bookkeeping that can influence future transitions.
+type NodeState struct {
+	Schema            string          `json:"schema"`
+	ID                NodeID          `json:"id"`
+	Members           []NodeID        `json:"members"`
+	InitialMembership Membership      `json:"initial_membership"`
+	Membership        Membership      `json:"membership"`
+	Role              Role            `json:"role"`
+	Leader            NodeID          `json:"leader,omitempty"`
+	Persistent        PersistentState `json:"persistent"`
+	Applied           uint64          `json:"applied"`
+
+	Votes              []NodeID           `json:"votes"`
+	ElectionVotes      []NodeID           `json:"election_votes"`
+	ElectionMembership Membership         `json:"election_membership"`
+	NextIndex          []NodeIndex        `json:"next_index"`
+	MatchIndex         []NodeIndex        `json:"match_index"`
+	AppendSequence     []NodeIndex        `json:"append_sequence"`
+	NextWriteToken     uint64             `json:"next_write_token"`
+	Pending            *PendingWriteState `json:"pending,omitempty"`
+}
+
 func cloneEntry(entry Entry) Entry {
 	entry.Data = slices.Clone(entry.Data)
 	entry.Membership = CloneMembership(entry.Membership)
@@ -321,6 +357,22 @@ func CloneMessage(message Message) Message {
 	message.Entries = cloneEntries(message.Entries)
 	message.Snapshot = cloneSnapshot(message.Snapshot)
 	return message
+}
+
+func cloneEffect(effect Effect) Effect {
+	effect.State = cloneState(effect.State)
+	effect.Message = CloneMessage(effect.Message)
+	effect.Entry = cloneEntry(effect.Entry)
+	effect.Snapshot = cloneSnapshot(effect.Snapshot)
+	return effect
+}
+
+func cloneEffects(effects []Effect) []Effect {
+	result := make([]Effect, len(effects))
+	for index, effect := range effects {
+		result[index] = cloneEffect(effect)
+	}
+	return result
 }
 
 // CloneEntry returns a deep copy of entry.

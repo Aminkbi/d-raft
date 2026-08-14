@@ -1,8 +1,10 @@
 package sim
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 )
@@ -19,7 +21,10 @@ var (
 	ErrInvalidMatrix          = errors.New("sim: invalid partition matrix")
 	ErrPacketExhausted        = errors.New("sim: packet identifier space exhausted")
 	ErrInvalidNetworkDecision = errors.New("sim: invalid network decision")
+	ErrUncacheableRouter      = errors.New("sim: router state is not canonically inspectable")
 )
+
+const RouterStateSchema = "d-raft.router-state/v1"
 
 // NodeID identifies a simulated network endpoint.
 type NodeID string
@@ -207,6 +212,39 @@ type NetworkDecisionSource[M any] interface {
 	Latency(Packet[M], LinkConfig) (time.Duration, error)
 }
 
+// PacketEventTagger encodes the semantic payload captured by an in-flight
+// delivery callback. Reference explorers install one; generic routers may
+// continue using opaque callbacks.
+type PacketEventTagger[M any] func(Packet[M]) (EventTag, error)
+
+type CanonicalLinkState struct {
+	From                NodeID `json:"from,omitempty"`
+	To                  NodeID `json:"to,omitempty"`
+	MinLatencyNS        int64  `json:"min_latency_ns"`
+	MaxLatencyNS        int64  `json:"max_latency_ns"`
+	LossProbabilityBits uint64 `json:"loss_probability_bits"`
+}
+
+type CanonicalRouteState struct {
+	From NodeID `json:"from"`
+	To   NodeID `json:"to"`
+}
+
+// RouterState contains topology, endpoint, allocation, and random-stream
+// state. In-flight packets are represented by Simulator delivery event tags.
+type RouterState struct {
+	Schema          string                `json:"schema"`
+	DefaultLink     CanonicalLinkState    `json:"default_link"`
+	Links           []CanonicalLinkState  `json:"links"`
+	Endpoints       []NodeID              `json:"endpoints"`
+	PartitionActive bool                  `json:"partition_active"`
+	PartitionNodes  []NodeID              `json:"partition_nodes"`
+	Allowed         []CanonicalRouteState `json:"allowed"`
+	NextPacket      uint64                `json:"next_packet"`
+	Exhausted       bool                  `json:"exhausted"`
+	Random          RandState             `json:"random"`
+}
+
 // Router is a deterministic, directed, in-memory network. It performs all
 // work through its Simulator and never starts goroutines.
 type Router[M any] struct {
@@ -222,6 +260,7 @@ type Router[M any] struct {
 	exhausted   bool
 	trace       TraceSink
 	decisions   NetworkDecisionSource[M]
+	eventTagger PacketEventTagger[M]
 }
 
 // NewRouter constructs a router. Passing nil for clone uses ordinary Go
@@ -292,6 +331,12 @@ func (r *Router[M]) SetDecisionSource(source NetworkDecisionSource[M]) {
 	r.decisions = source
 }
 
+// SetPacketEventTagger makes future delivery callbacks canonically visible.
+// Passing nil restores ordinary opaque simulator callbacks.
+func (r *Router[M]) SetPacketEventTagger(tagger PacketEventTagger[M]) {
+	r.eventTagger = tagger
+}
+
 // SetObserver sets the lifecycle observer. Passing nil disables observation.
 func (r *Router[M]) SetObserver(observer Observer[M]) {
 	r.observer = observer
@@ -350,6 +395,65 @@ func (r *Router[M]) SetPartition(matrix *PartitionMatrix) {
 		}
 	}
 	r.recordTrace(event)
+}
+
+// CanonicalState returns an independently owned, map-order-independent router
+// checkpoint. Trace sinks and observers are rejected because arbitrary
+// callbacks can introduce hidden side effects.
+func (r *Router[M]) CanonicalState() (RouterState, error) {
+	if r.trace != nil || r.observer != nil || r.eventTagger == nil {
+		return RouterState{}, ErrUncacheableRouter
+	}
+	state := RouterState{
+		Schema:      RouterStateSchema,
+		DefaultLink: canonicalLink("", "", r.defaultLink),
+		NextPacket:  r.nextPacket,
+		Exhausted:   r.exhausted,
+		Random:      r.rng.State(),
+	}
+	state.Endpoints = make([]NodeID, 0, len(r.handlers))
+	for endpoint := range r.handlers {
+		state.Endpoints = append(state.Endpoints, endpoint)
+	}
+	slices.Sort(state.Endpoints)
+	state.Links = make([]CanonicalLinkState, 0, len(r.links))
+	for key, link := range r.links {
+		state.Links = append(state.Links, canonicalLink(key.from, key.to, link))
+	}
+	slices.SortFunc(state.Links, func(left, right CanonicalLinkState) int {
+		if order := stringCompare(string(left.From), string(right.From)); order != 0 {
+			return order
+		}
+		return stringCompare(string(left.To), string(right.To))
+	})
+	if r.partition != nil {
+		state.PartitionActive = true
+		state.PartitionNodes = slices.Clone(r.partition.nodes)
+		for key := range r.partition.allowed {
+			state.Allowed = append(state.Allowed, CanonicalRouteState{From: key.from, To: key.to})
+		}
+		slices.SortFunc(state.Allowed, func(left, right CanonicalRouteState) int {
+			if order := stringCompare(string(left.From), string(right.From)); order != 0 {
+				return order
+			}
+			return stringCompare(string(left.To), string(right.To))
+		})
+	}
+	return state, nil
+}
+
+func canonicalLink(from, to NodeID, link LinkConfig) CanonicalLinkState {
+	return CanonicalLinkState{From: from, To: to, MinLatencyNS: int64(link.MinLatency), MaxLatencyNS: int64(link.MaxLatency), LossProbabilityBits: math.Float64bits(link.LossProbability)}
+}
+
+func stringCompare(left, right string) int {
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
 }
 
 // Send submits a packet to the simulated network.
@@ -414,9 +518,19 @@ func (r *Router[M]) Send(from, to NodeID, message M) (SendResult, error) {
 		latency = r.rng.Duration(link.MinLatency, link.MaxLatency)
 	}
 	var deliveryAt time.Duration
-	_, err := r.sim.Schedule(latency, func(_ *Simulator) {
+	var err error
+	action := func(_ *Simulator) {
 		r.deliver(packet, deliveryAt)
-	})
+	}
+	if r.eventTagger == nil {
+		_, err = r.sim.Schedule(latency, action)
+	} else {
+		var tag EventTag
+		tag, err = r.eventTagger(packet)
+		if err == nil {
+			_, err = r.sim.ScheduleTagged(latency, tag, action)
+		}
+	}
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -424,6 +538,15 @@ func (r *Router[M]) Send(from, to NodeID, message M) (SendResult, error) {
 	result := SendResult{PacketID: packetID, Scheduled: true, DeliveryAt: deliveryAt}
 	r.observe(NetworkEvent[M]{Kind: PacketScheduled, Packet: packet, At: r.sim.Now(), DeliveryAt: deliveryAt})
 	return result, nil
+}
+
+// JSONPacketEventTagger returns the reference JSON delivery descriptor.
+func JSONPacketEventTagger[M any](packet Packet[M]) (EventTag, error) {
+	data, err := json.Marshal(packet)
+	if err != nil {
+		return EventTag{}, err
+	}
+	return EventTag{Kind: EventNetworkDelivery, Data: data}, nil
 }
 
 func (r *Router[M]) deliver(packet Packet[M], deliveryAt time.Duration) {

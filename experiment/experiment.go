@@ -2,6 +2,7 @@
 package experiment
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -14,6 +15,8 @@ import (
 	"github.com/aminkbi/d-raft/raft"
 	"github.com/aminkbi/d-raft/raftsim"
 )
+
+const FrontierSchemaVersion = "d-raft.reference-frontier/v1"
 
 type nodeSnapshot struct {
 	ID     raft.NodeID   `json:"id"`
@@ -41,16 +44,65 @@ func Execute(scenario artifact.Scenario, configuration artifact.Configuration, d
 	return executeScheduled(cluster, scenario)
 }
 
+// ExecuteWithFrontier reruns the controlled reference adapter and, when the
+// decider opens a choice, returns canonical bytes for the stable boundary
+// immediately before the active event plus choices already consumed inside
+// that event. Generic runners cannot use this contract implicitly.
+func ExecuteWithFrontier(scenario artifact.Scenario, configuration artifact.Configuration, decider decision.Decider) (artifact.Outcome, []byte, error) {
+	if err := artifact.ValidateExperiment(scenario, configuration); err != nil {
+		return artifact.Outcome{}, nil, err
+	}
+	if decider == nil {
+		return artifact.Outcome{}, nil, errors.New("experiment: frontier execution requires a decider")
+	}
+	recorder := decision.NewRecorder(decider)
+	cluster, err := raftsim.NewPaused(configuration.ClusterConfig(recorder, nil))
+	if err != nil {
+		return artifact.Outcome{}, nil, err
+	}
+	preEvent, err := cluster.CanonicalState()
+	if err != nil {
+		return artifact.Outcome{}, nil, err
+	}
+	before := len(recorder.Tape().Entries)
+	err = cluster.Bootstrap()
+	if errors.Is(err, decision.ErrOpenChoice) {
+		frontier, encodeErr := encodeFrontier(scenario, configuration, 0, preEvent, decisionsSince(recorder, before))
+		if encodeErr != nil {
+			return artifact.Outcome{}, nil, encodeErr
+		}
+		return artifact.Outcome{}, frontier, err
+	}
+	if err != nil {
+		return artifact.Outcome{}, nil, err
+	}
+	return executeScheduledControlled(cluster, scenario, configuration, recorder)
+}
+
 func executeScheduled(cluster *raftsim.Cluster, scenario artifact.Scenario) (artifact.Outcome, error) {
+	outcome, _, err := executeScheduledCore(cluster, scenario, artifact.Configuration{}, nil)
+	return outcome, err
+}
+
+func executeScheduledControlled(cluster *raftsim.Cluster, scenario artifact.Scenario, configuration artifact.Configuration, recorder *decision.Recorder) (artifact.Outcome, []byte, error) {
+	return executeScheduledCore(cluster, scenario, configuration, recorder)
+}
+
+func executeScheduledCore(cluster *raftsim.Cluster, scenario artifact.Scenario, configuration artifact.Configuration, recorder *decision.Recorder) (artifact.Outcome, []byte, error) {
 	var actionErr error
 	for _, source := range scenario.Actions {
 		action := cloneAction(source)
-		if _, err := cluster.Simulator().Schedule(time.Duration(action.AtNS), func(_ *sim.Simulator) {
+		data, err := json.Marshal(action)
+		if err != nil {
+			return artifact.Outcome{}, nil, err
+		}
+		tag := sim.EventTag{Kind: sim.EventExternalAction, Data: data}
+		if _, err := cluster.Simulator().ScheduleAtTagged(time.Duration(action.AtNS), tag, func(_ *sim.Simulator) {
 			if actionErr == nil {
 				actionErr = applyAction(cluster, action)
 			}
 		}); err != nil {
-			return artifact.Outcome{}, err
+			return artifact.Outcome{}, nil, err
 		}
 	}
 
@@ -70,9 +122,31 @@ func executeScheduled(cluster *raftsim.Cluster, scenario artifact.Scenario) (art
 			budgetExhausted = true
 			break
 		}
+		var preEvent []byte
+		before := 0
+		stepsBefore := steps
+		if recorder != nil {
+			var stateErr error
+			preEvent, stateErr = cluster.CanonicalState()
+			if stateErr != nil {
+				return artifact.Outcome{}, nil, stateErr
+			}
+			before = len(recorder.Tape().Entries)
+		}
 		ran, err := cluster.Step()
 		if ran {
 			steps++
+		}
+		openErr := err
+		if openErr == nil && errors.Is(actionErr, decision.ErrOpenChoice) {
+			openErr = actionErr
+		}
+		if recorder != nil && errors.Is(openErr, decision.ErrOpenChoice) {
+			frontier, encodeErr := encodeFrontier(scenario, configuration, stepsBefore, preEvent, decisionsSince(recorder, before))
+			if encodeErr != nil {
+				return artifact.Outcome{}, nil, encodeErr
+			}
+			return artifact.Outcome{}, frontier, openErr
 		}
 		if err != nil {
 			runErr = err
@@ -88,29 +162,63 @@ func executeScheduled(cluster *raftsim.Cluster, scenario artifact.Scenario) (art
 		runErr = actionErr
 	}
 	if errors.Is(runErr, decision.ErrOpenChoice) {
-		return artifact.Outcome{}, runErr
+		return artifact.Outcome{}, nil, runErr
 	}
 
 	violations := cluster.Violations()
 	digest, digestErr := snapshotDigest(cluster, violations)
 	if digestErr != nil {
-		return artifact.Outcome{}, digestErr
+		return artifact.Outcome{}, nil, digestErr
 	}
 	outcome := artifact.Outcome{Status: artifact.OutcomeCompleted, Steps: steps, EndNS: int64(cluster.Simulator().Now()), ObservationDigest: digest, Violations: violations}
 	if len(violations) > 0 {
 		outcome.Status = artifact.OutcomeViolation
-		return outcome, nil
+		return outcome, nil, nil
 	}
 	if runErr != nil {
 		outcome.Status = artifact.OutcomeError
 		outcome.Error = runErr.Error()
-		return outcome, nil
+		return outcome, nil, nil
 	}
 	if budgetExhausted {
 		outcome.Status = artifact.OutcomeBudgetExhausted
-		return outcome, nil
+		return outcome, nil, nil
 	}
-	return outcome, nil
+	return outcome, nil, nil
+}
+
+type frontierState struct {
+	Schema         string                 `json:"schema"`
+	Adapter        artifact.Adapter       `json:"adapter"`
+	DecisionSchema string                 `json:"decision_schema"`
+	CheckerSchema  string                 `json:"checker_schema"`
+	MessageCodec   string                 `json:"message_codec"`
+	Scenario       artifact.Scenario      `json:"scenario"`
+	Configuration  artifact.Configuration `json:"configuration"`
+	StepsUsed      uint64                 `json:"steps_used"`
+	PreEvent       json.RawMessage        `json:"pre_event"`
+	InEvent        []decision.Entry       `json:"in_event"`
+}
+
+func encodeFrontier(scenario artifact.Scenario, configuration artifact.Configuration, steps uint64, preEvent []byte, inEvent []decision.Entry) ([]byte, error) {
+	if !json.Valid(preEvent) {
+		return nil, errors.New("experiment: invalid canonical pre-event state")
+	}
+	return json.Marshal(frontierState{
+		Schema:         FrontierSchemaVersion,
+		Adapter:        artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterCurrent},
+		DecisionSchema: decision.SchemaVersion, CheckerSchema: check.SchemaVersion, MessageCodec: artifact.MessageCodecCurrent,
+		Scenario: scenario, Configuration: configuration, StepsUsed: steps,
+		PreEvent: append(json.RawMessage(nil), preEvent...), InEvent: inEvent,
+	})
+}
+
+func decisionsSince(recorder *decision.Recorder, before int) []decision.Entry {
+	tape := recorder.Tape()
+	if before < 0 || before > len(tape.Entries) {
+		return nil
+	}
+	return decision.CloneTape(decision.Tape{Schema: decision.SchemaVersion, Entries: tape.Entries[before:]}).Entries
 }
 
 func applyAction(cluster *raftsim.Cluster, action artifact.Action) error {

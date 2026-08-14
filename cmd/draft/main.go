@@ -70,6 +70,9 @@ func exploreCommand(args []string, stdout, stderr io.Writer) int {
 	depth := flags.Int("depth", 6, "systematic prefix depth")
 	branches := flags.Int("branches", 3, "maximum branches per choice")
 	rangeSamples := flags.Int("range-samples", 3, "range samples: 1=min, 2=min/max, 3=min/mid/max")
+	cacheEnabled := flags.Bool("cache", true, "enable canonical reference-state pruning")
+	cacheEntries := flags.Int("cache-entries", 100_000, "maximum retained canonical states")
+	cacheBytes := flags.Int("cache-bytes", 256<<20, "maximum retained canonical-state bytes")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -87,15 +90,29 @@ func exploreCommand(args []string, stdout, stderr io.Writer) int {
 	config.Network.LossProbability = *loss
 	scenario := artifact.Scenario{ID: "steady-cluster-exploration", Version: "1", DurationNS: int64(*duration), MaxSteps: *maxSteps}
 	configuration := artifact.ConfigurationFrom(config)
-	runner := func(decider decision.Decider) (artifact.Outcome, error) {
-		return experiment.Execute(scenario, configuration, decider)
+	bounds := explore.Bounds{MaxRuns: *maxRuns, MaxDepth: *depth, MaxBranchesPerChoice: *branches, RangeSamples: *rangeSamples, FallbackSeed: *seed, StopOnViolation: true}
+	var result explore.Result
+	if *cacheEnabled {
+		result, err = explore.DFSWithCache(
+			func(decider decision.Decider) (artifact.Outcome, []byte, error) {
+				return experiment.ExecuteWithFrontier(scenario, configuration, decider)
+			},
+			bounds,
+			explore.CacheBounds{MaxEntries: *cacheEntries, MaxBytes: *cacheBytes},
+		)
+	} else {
+		result, err = explore.DFS(func(decider decision.Decider) (artifact.Outcome, error) {
+			return experiment.Execute(scenario, configuration, decider)
+		}, bounds)
 	}
-	result, err := explore.DFS(runner, explore.Bounds{MaxRuns: *maxRuns, MaxDepth: *depth, MaxBranchesPerChoice: *branches, RangeSamples: *rangeSamples, FallbackSeed: *seed, StopOnViolation: true})
 	if err != nil {
 		reportError(stderr, "draft explore", err)
 		return 2
 	}
-	fmt.Fprintf(stdout, "runs: %d\nopen choices: %d\ncompleted: %d\npruned: %d\ndepth-bound suffixes: %d\nsampled domains: %d\nviolations: %d\nrun-budget truncated: %t\n", result.Runs, result.OpenChoices, result.Completed, result.PrunedPrefixes, result.DepthBoundHits, result.SampledDomains, result.ViolatingRuns, result.Truncated)
+	fmt.Fprintf(stdout, "runs: %d\nopen choices: %d\ncompleted: %d\nprefix-pruned: %d\nstate-pruned: %d\ndepth-bound suffixes: %d\nsampled domains: %d\nviolations: %d\nrun-budget truncated: %t\n", result.Runs, result.OpenChoices, result.Completed, result.PrunedPrefixes, result.StatePruned, result.DepthBoundHits, result.SampledDomains, result.ViolatingRuns, result.Truncated)
+	if *cacheEnabled {
+		fmt.Fprintf(stdout, "cache lookups: %d\ncache exact hits: %d\ncache misses: %d\ncache digest collisions: %d\ncache retained states: %d\ncache retained bytes: %d\ncache budget skips: %d\n", result.CacheLookups, result.CacheHits, result.CacheMisses, result.HashCollisions, result.UniqueStates, result.CacheBytes, result.CacheBudgetSkips)
+	}
 	if result.FirstViolation == nil {
 		return 0
 	}

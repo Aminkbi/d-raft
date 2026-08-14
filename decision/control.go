@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 )
@@ -106,7 +107,10 @@ func NewGuidedDecider(guide Tape, fallback Decider) (*GuidedDecider, error) {
 	}
 	entries := make(map[string]Entry, len(guide.Entries))
 	for _, entry := range guide.Entries {
-		key := entryKey(entry)
+		key, err := choiceKey(entry.Choice)
+		if err != nil {
+			return nil, err
+		}
 		if _, exists := entries[key]; exists {
 			return nil, fmt.Errorf("%w: duplicate guided choice %q", ErrTapeMismatch, entry.Choice.ID)
 		}
@@ -127,17 +131,23 @@ func (d *GuidedDecider) Choose(choice Choice) (Selection, error) {
 }
 
 func choiceKey(choice Choice) (string, error) {
-	domain, err := DomainDigest(choice)
+	domain, err := CanonicalDomain(choice)
 	if err != nil {
 		return "", err
 	}
-	context, err := ContextDigest(choice)
+	context, err := CanonicalContext(choice)
 	if err != nil {
 		return "", err
 	}
-	return choice.ID + "\x00" + string(choice.Kind) + "\x00" + domain + "\x00" + context, nil
+	key := make([]byte, 0, len(choice.ID)+len(choice.Kind)+len(domain)+len(context)+32)
+	key = appendKeyField(key, []byte(choice.ID))
+	key = appendKeyField(key, []byte(choice.Kind))
+	key = appendKeyField(key, domain)
+	key = appendKeyField(key, context)
+	return string(key), nil
 }
 
-func entryKey(entry Entry) string {
-	return entry.Choice.ID + "\x00" + string(entry.Choice.Kind) + "\x00" + entry.DomainDigest + "\x00" + entry.ContextDigest
+func appendKeyField(destination, field []byte) []byte {
+	destination = binary.BigEndian.AppendUint64(destination, uint64(len(field)))
+	return append(destination, field...)
 }

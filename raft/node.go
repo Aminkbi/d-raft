@@ -6,6 +6,8 @@ import (
 	"slices"
 )
 
+const StateSchemaVersion = "d-raft.raft-node-state/v1"
+
 // Node is a deterministic, pure Raft state machine. It is not safe for
 // concurrent use. All I/O requested by a transition is returned as Effects.
 type Node struct {
@@ -179,6 +181,59 @@ func (n *Node) Status() Status {
 		status.WriteToken = n.pending.token
 	}
 	return status
+}
+
+// State returns a complete canonical deep copy of the node state. Map-backed
+// fields are represented as slices sorted by node ID.
+func (n *Node) State() NodeState {
+	state := NodeState{
+		Schema:             StateSchemaVersion,
+		ID:                 n.id,
+		Members:            slices.Clone(n.members),
+		InitialMembership:  CloneMembership(n.initialMembership),
+		Membership:         CloneMembership(n.membership),
+		Role:               n.role,
+		Leader:             n.leader,
+		Persistent:         cloneState(n.state),
+		Applied:            n.applied,
+		ElectionVotes:      slices.Clone(n.electionVotes),
+		ElectionMembership: CloneMembership(n.electionMembership),
+		NextWriteToken:     n.nextWriteToken,
+	}
+	state.Votes = sortedNodeSet(n.votes)
+	state.NextIndex = sortedNodeIndexes(n.nextIndex)
+	state.MatchIndex = sortedNodeIndexes(n.matchIndex)
+	state.AppendSequence = sortedNodeIndexes(n.appendSequence)
+	if n.pending != nil {
+		state.Pending = &PendingWriteState{Token: n.pending.token, Effects: cloneEffects(n.pending.effects)}
+	}
+	return state
+}
+
+func sortedNodeSet(values map[NodeID]struct{}) []NodeID {
+	result := make([]NodeID, 0, len(values))
+	for node := range values {
+		result = append(result, node)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func sortedNodeIndexes(values map[NodeID]uint64) []NodeIndex {
+	result := make([]NodeIndex, 0, len(values))
+	for node, value := range values {
+		result = append(result, NodeIndex{Node: node, Value: value})
+	}
+	slices.SortFunc(result, func(left, right NodeIndex) int {
+		if left.Node < right.Node {
+			return -1
+		}
+		if left.Node > right.Node {
+			return 1
+		}
+		return 0
+	})
+	return result
 }
 
 func (n *Node) acknowledgePersistence(token uint64) ([]Effect, error) {

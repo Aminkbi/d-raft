@@ -46,6 +46,8 @@ The repository currently contains:
    observational trace schema.
 7. A strict run-artifact schema and CLI that bundle scenario, configuration,
    environment, semantic tape, outcome, observation digest, and witnesses.
+8. A versioned, event-boundary canonical state for the reference runner and a
+   collision-safe, capacity-bounded exploration cache with exact-byte equality.
 
 The reference model is a fixture and oracle for experiments, not itself the
 claimed research novelty.
@@ -93,6 +95,7 @@ violation witness.
 - [x] Fingerprint-preserving semantic delta debugging and domain shrinkers
 - [x] Snapshot installation and safe log compaction
 - [x] Joint-consensus membership changes and learners
+- [x] Canonical reference frontiers and collision-safe bounded state caching
 - [ ] Production Raft adapter with declared capability boundaries
 - [ ] Chain-of-Blocks state-machine oracle and seeded mutant corpus
 - [ ] Comparative evaluation, public counterexample corpus, and archival release
@@ -110,12 +113,14 @@ decision schema, invariant, and raw/minimized artifact sizes. Performance
 comparisons require repeated trials and uncertainty intervals.
 
 Primary measurements are executions and transitions per second, explored
-prefixes and unique canonical states, time to first failure, distinct violation
+prefixes and retained unique frontier identities, time to first failure, distinct violation
 fingerprints, replay success rate, cross-adapter replay rate, reduction ratio,
 reduction cost, and mutant kill rate.
 
 Planned baselines include:
 
+- matched cache-off/cache-on runs with identical scenario, seed, bounds,
+  branch order, capacity, sampling, and truncation reporting;
 - seed-only randomized replay;
 - ordinary delta debugging over a flat stimulus list;
 - a DEMi-inspired distributed-trace reduction strategy; and
@@ -149,7 +154,8 @@ artifact.
   corruption, and hardware behavior unless modeled explicitly.
 - Bounded exploration cannot establish unbounded safety or liveness.
 - A non-Markov-complete state abstraction can unsafely merge distinct futures;
-  early exploration must compare canonical state encodings as well as hashes.
+  exploration therefore uses SHA-256 only as a bucket index and requires exact
+  canonical-byte equality before pruning.
 - Reference-model and checker defects can be correlated despite package
   separation; mutants, independent adapters, and external validation mitigate
   but do not eliminate this risk.

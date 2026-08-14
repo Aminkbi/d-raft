@@ -212,6 +212,22 @@ func (d *TapeDecider) Choose(choice Choice) (Selection, error) {
 		return Selection{}, fmt.Errorf("%w at choice %d: %s", ErrTapeExhausted, d.index, choice.ID)
 	}
 	entry := d.tape.Entries[d.index]
+	actualDomain, err := CanonicalDomain(choice)
+	if err != nil {
+		return Selection{}, err
+	}
+	recordedDomain, err := CanonicalDomain(entry.Choice)
+	if err != nil {
+		return Selection{}, err
+	}
+	actualContext, err := CanonicalContext(choice)
+	if err != nil {
+		return Selection{}, err
+	}
+	recordedContext, err := CanonicalContext(entry.Choice)
+	if err != nil {
+		return Selection{}, err
+	}
 	digest, err := DomainDigest(choice)
 	if err != nil {
 		return Selection{}, err
@@ -220,7 +236,7 @@ func (d *TapeDecider) Choose(choice Choice) (Selection, error) {
 	if err != nil {
 		return Selection{}, err
 	}
-	if entry.Choice.ID != choice.ID || entry.Choice.Kind != choice.Kind || entry.DomainDigest != digest || entry.ContextDigest != contextDigest {
+	if entry.Choice.ID != choice.ID || entry.Choice.Kind != choice.Kind || !bytes.Equal(recordedDomain, actualDomain) || !bytes.Equal(recordedContext, actualContext) || entry.DomainDigest != digest || entry.ContextDigest != contextDigest {
 		return Selection{}, fmt.Errorf("%w at choice %d: got id=%q kind=%q domain=%q context=%q, want id=%q kind=%q domain=%q context=%q", ErrTapeMismatch, d.index, choice.ID, choice.Kind, digest, contextDigest, entry.Choice.ID, entry.Choice.Kind, entry.DomainDigest, entry.ContextDigest)
 	}
 	if err := ValidateSelection(choice, entry.Selection); err != nil {
@@ -288,16 +304,7 @@ func ValidateSelection(choice Choice, selection Selection) error {
 
 // DomainDigest returns the stable identity of a choice's kind and domain.
 func DomainDigest(choice Choice) (string, error) {
-	if err := ValidateChoice(choice); err != nil {
-		return "", err
-	}
-	canonical := struct {
-		Kind    Kind     `json:"kind"`
-		Options []Option `json:"options,omitempty"`
-		Min     *int64   `json:"min,omitempty"`
-		Max     *int64   `json:"max,omitempty"`
-	}{Kind: choice.Kind, Options: choice.Options, Min: choice.Min, Max: choice.Max}
-	raw, err := json.Marshal(canonical)
+	raw, err := CanonicalDomain(choice)
 	if err != nil {
 		return "", err
 	}
@@ -305,12 +312,40 @@ func DomainDigest(choice Choice) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
+// CanonicalDomain returns the exact stable encoding used for domain equality.
+// Callers that require collision-free equality must compare these bytes rather
+// than only DomainDigest.
+func CanonicalDomain(choice Choice) ([]byte, error) {
+	if err := ValidateChoice(choice); err != nil {
+		return nil, err
+	}
+	canonical := struct {
+		Kind    Kind     `json:"kind"`
+		Options []Option `json:"options,omitempty"`
+		Min     *int64   `json:"min,omitempty"`
+		Max     *int64   `json:"max,omitempty"`
+	}{Kind: choice.Kind, Options: choice.Options, Min: choice.Min, Max: choice.Max}
+	return json.Marshal(canonical)
+}
+
 // ContextDigest returns the stable identity of a choice's diagnostic semantic
 // context. Insignificant JSON whitespace does not affect the digest. Producers
 // should marshal structured contexts so object key order is canonical.
 func ContextDigest(choice Choice) (string, error) {
-	if err := ValidateChoice(choice); err != nil {
+	canonical, err := CanonicalContext(choice)
+	if err != nil {
 		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// CanonicalContext returns the compact exact encoding used for context
+// equality. Producers should marshal structured values so object key order is
+// stable.
+func CanonicalContext(choice Choice) ([]byte, error) {
+	if err := ValidateChoice(choice); err != nil {
+		return nil, err
 	}
 	context := choice.Context
 	if len(context) == 0 {
@@ -318,10 +353,9 @@ func ContextDigest(choice Choice) (string, error) {
 	}
 	buffer := bytes.NewBuffer(nil)
 	if err := json.Compact(buffer, context); err != nil {
-		return "", fmt.Errorf("%w: choice %q context: %v", ErrInvalidChoice, choice.ID, err)
+		return nil, fmt.Errorf("%w: choice %q context: %v", ErrInvalidChoice, choice.ID, err)
 	}
-	digest := sha256.Sum256(buffer.Bytes())
-	return hex.EncodeToString(digest[:]), nil
+	return slices.Clone(buffer.Bytes()), nil
 }
 
 func cloneChoice(choice Choice) Choice {

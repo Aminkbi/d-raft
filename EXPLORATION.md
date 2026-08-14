@@ -28,10 +28,11 @@ optionally midpoint. Results separately report:
 The first matching violation can be emitted directly as a normal
 `d-raft.run/v3` artifact and replayed with `draft replay`.
 
-Exploration branches only over semantic timer, network, and storage choices; it
-does not synthesize action schedules or target memberships. The `explore.DFS`
-API can execute a caller-constructed v3 membership scenario, while the current
-`draft explore` command generates a steady all-voter scenario.
+The built-in reference command branches over semantic timer, network, and
+storage choices; it does not synthesize action schedules or target
+memberships. The general `explore.DFS` API accepts every valid choice kind and
+can execute a caller-constructed v3 membership scenario, while `draft explore`
+generates a steady all-voter scenario.
 
 ## Bounds and interpretation
 
@@ -41,11 +42,38 @@ that samples a range, limits branches, completes a seeded suffix, or exhausts
 its run budget is not an exhaustive proof. The CLI reports those conditions
 instead of calling the search complete.
 
-The current implementation intentionally has no state cache or partial-order
-reduction. Those optimizations can silently miss failures unless the state
-encoding is Markov-complete. A later milestone will define and test a canonical
-state containing protocol and durable state, process incarnation, topology,
-timers, in-flight semantic messages, remaining actions, and decider state.
+`explore.DFSWithCache` adds opt-in, bounded canonical-state pruning;
+`draft explore` enables it by default and `--cache=false` provides the matched
+uncached baseline. Partial-order reduction is not implemented.
+
+## Canonical frontier
+
+The cache compares a stable state immediately before an event, the exact
+semantic selections consumed inside that event, and the next open choice.
+This tuple reconstructs an in-callback continuation through a clean rerun;
+Go stack frames and closures are never serialized.
+
+The canonical encoding covers protocol and durable state, process lifecycle,
+timers, semantic in-flight messages, topology, pending persistence, queued
+inputs, remaining external actions, checker history, and exploration
+continuation. Its Markov-completeness contract is limited to the built-in
+reference adapter and named schema/configuration versions. Arbitrary runner
+closures remain uncached unless they provide an explicit complete-state
+contract.
+
+SHA-256 may select a cache bucket, but pruning requires exact equality of the
+full canonical bytes stored in that bucket. Cache capacity is bounded and
+deterministic; a full cache bypasses admission but cannot justify a merge.
+Remaining exploration depth or equivalent coverage information is part of the
+bounded-search comparison.
+
+Converging synthetic models and a small reference scenario currently test
+cache-off/cache-on parity. The broader evaluation matrix remains to be run.
+Benchmark runs should report lookups, exact hits, collisions, retained unique
+identities, pruned prefixes, encoding and memory cost, avoided work, wall time,
+and all sampling or truncation flags.
+State caching is established model-checking practice; this work applies it to
+d-raft's semantic explorer rather than claiming a novel reduction method.
 
 ## Reproducibility
 

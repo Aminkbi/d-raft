@@ -23,6 +23,21 @@ type Rand struct {
 	splitCount uint64
 }
 
+// RandState is the future-relevant state of one deterministic stream.
+type RandState struct {
+	State      uint64 `json:"state"`
+	SplitCount uint64 `json:"split_count"`
+}
+
+// State returns an immutable checkpoint. Trace metadata is deliberately
+// excluded because canonical exploration rejects side-effecting trace sinks.
+func (r *Rand) State() RandState {
+	if r == nil {
+		return RandState{}
+	}
+	return RandState{State: r.state, SplitCount: r.splitCount}
+}
+
 // NewRand returns a generator initialized with seed. Every uint64 value,
 // including zero, is a valid seed.
 func NewRand(seed uint64) *Rand {

@@ -2,6 +2,7 @@ package raftsim
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -9,9 +10,111 @@ import (
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/check"
 	"github.com/aminkbi/d-raft/decision"
 	"github.com/aminkbi/d-raft/raft"
 )
+
+func TestCanonicalStateIsDeterministicAndMapOrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	build := func(reverse bool) []byte {
+		t.Helper()
+		config := DefaultConfig("a", "b", "c")
+		config.Decider = decision.NewSeedDecider(7)
+		cluster, err := NewPaused(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		links := [][2]sim.NodeID{{"a", "b"}, {"b", "c"}}
+		if reverse {
+			links[0], links[1] = links[1], links[0]
+		}
+		for _, link := range links {
+			if err := cluster.Router().SetLink(link[0], link[1], sim.LinkConfig{MinLatency: time.Millisecond, MaxLatency: 2 * time.Millisecond, LossProbability: .25}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := cluster.Bootstrap(); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := cluster.CanonicalState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !json.Valid(raw) {
+			t.Fatal("canonical state is not JSON")
+		}
+		return raw
+	}
+	left := build(false)
+	if !bytes.Equal(left, build(true)) {
+		t.Fatal("map insertion order changed canonical bytes")
+	}
+}
+
+func TestCanonicalStateDistinguishesPendingEventOrder(t *testing.T) {
+	t.Parallel()
+
+	build := func(reverse bool) []byte {
+		t.Helper()
+		config := DefaultConfig("a")
+		config.Decider = decision.NewSeedDecider(1)
+		cluster, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reverse {
+			if _, err := cluster.ScheduleRestart(time.Second, "a"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cluster.ScheduleCrash(time.Second, "a"); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if _, err := cluster.ScheduleCrash(time.Second, "a"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cluster.ScheduleRestart(time.Second, "a"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		raw, err := cluster.CanonicalState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	if bytes.Equal(build(false), build(true)) {
+		t.Fatal("future event order was erased")
+	}
+}
+
+func TestViolationsAreDeepCopiedAndMatchCanonicalState(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig("a")
+	config.Decider = decision.NewSeedDecider(1)
+	cluster, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster.violations = []check.Violation{{ID: check.ElectionSafety, Nodes: []raft.NodeID{"a"}, Evidence: []byte(`{"term":1}`), Fingerprint: "test"}}
+	before, err := cluster.CanonicalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := cluster.Violations()
+	copy[0].Nodes[0] = "mutated"
+	copy[0].Evidence[0] = 'x'
+	after, err := cluster.CanonicalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) || cluster.violations[0].Nodes[0] != "a" || cluster.violations[0].Evidence[0] != '{' {
+		t.Fatal("caller mutation escaped violation snapshot")
+	}
+}
 
 func TestClusterElectsAndReplicates(t *testing.T) {
 	t.Parallel()
