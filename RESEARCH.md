@@ -48,6 +48,9 @@ The repository currently contains:
    environment, semantic tape, outcome, observation digest, and witnesses.
 8. A versioned, event-boundary canonical state for the reference runner and a
    collision-safe, capacity-bounded exploration cache with exact-byte equality.
+9. An experimental adapter for the unmodified `go.etcd.io/raft/v3` v3.7.0
+   `RawNode` core, with explicit fixed-membership capabilities, persistence
+   barriers, conservative checking, and adapter-local exact replay.
 
 The reference model is a fixture and oracle for experiments, not itself the
 claimed research novelty.
@@ -96,8 +99,8 @@ violation witness.
 - [x] Snapshot installation and safe log compaction
 - [x] Joint-consensus membership changes and learners
 - [x] Canonical reference frontiers and collision-safe bounded state caching
-- [ ] Production Raft adapter with declared capability boundaries
-- [ ] Chain-of-Blocks state-machine oracle and seeded mutant corpus
+- [x] Experimental production-core Raft adapter with declared capability boundaries
+- [ ] Portable application-state oracle and seeded mutant corpus
 - [ ] Comparative evaluation, public counterexample corpus, and archival release
 
 The completed membership milestone is deliberately scoped to role changes over
@@ -114,8 +117,9 @@ comparisons require repeated trials and uncertainty intervals.
 
 Primary measurements are executions and transitions per second, explored
 prefixes and retained unique frontier identities, time to first failure, distinct violation
-fingerprints, replay success rate, cross-adapter replay rate, reduction ratio,
-reduction cost, and mutant kill rate.
+fingerprints, exact local replay success, semantic-plan acceptance,
+normalized-outcome agreement, reduction ratio, reduction cost, and mutant kill
+rate.
 
 Planned baselines include:
 
@@ -169,7 +173,8 @@ artifact.
 - Opaque application snapshots cannot prove leader completeness for entries
   below their boundary. The current checker detects conflicting snapshots at
   an equal boundary but reports no stronger compacted-prefix claim; the planned
-  Chain-of-Blocks oracle supplies independently comparable state commitments.
+  portable application-state oracle supplies independently comparable state
+  commitments.
 
 These limitations must remain explicit in papers, talks, release notes, and
 artifact documentation.

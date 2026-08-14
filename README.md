@@ -22,8 +22,10 @@ The project is created and maintained by
 > fingerprint-preserving semantic minimization are implemented. Durable
 > snapshots, safe log compaction, and snapshot-bearing run artifacts are also
 > implemented. Joint-consensus membership changes and learners are implemented,
-> including durable recovery and snapshot-aware configuration state. Production
-> adapters and comparative evaluation remain active research work.
+> including durable recovery and snapshot-aware configuration state. An
+> experimental adapter for the production-used `go.etcd.io/raft/v3` core is
+> implemented for a declared fixed-membership capability subset. Portable
+> application oracles, mutants, and comparative evaluation remain active work.
 
 ## Why d-raft?
 
@@ -57,9 +59,11 @@ plan.
 | `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
 | `explore` | Clean-rerun bounded DFS with deterministic suffix completion and collision-safe canonical-state pruning |
 | `minimize` | Scenario ddmin, sparse semantic guidance reduction, and domain-aware selection shrinking |
+| `adapters/etcdraft` | Experimental `go.etcd.io/raft/v3` v3.7.0 production-core adapter with conservative checking and adapter-local exact replay |
 
 The root module is dependency-free and uses no wall-clock sleeps or background
-goroutines. It targets Go 1.26 and declares the current Go 1.26.6 toolchain.
+goroutines. The isolated nested etcd/raft adapter carries its production-core
+dependency. Both target Go 1.26 and declare the current Go 1.26.6 toolchain.
 
 ## Architecture
 
@@ -178,8 +182,10 @@ The v3 schema and Go APIs can also execute scheduled proposals, snapshots,
 joint membership transitions, partitions, healing, crashes, and restarts,
 including the crash-after-persistence-before-acknowledgement boundary. Role
 changes are limited to a pre-provisioned `Members` universe; they do not perform
-dynamic discovery or process creation. Named CLI fault suites and production
-adapters are later milestones. Canonical reference-state caching is enabled by
+dynamic discovery or process creation. Named CLI fault suites and broader
+production adapters are later milestones. The experimental etcd/raft
+production-core adapter and separate `draft-etcd` CLI are documented in
+[ADAPTERS.md](ADAPTERS.md). Canonical reference-state caching is enabled by
 default for `draft explore` and bounded with `--cache-entries` and
 `--cache-bytes`. See
 [ARTIFACTS.md](ARTIFACTS.md), [MEMBERSHIP.md](MEMBERSHIP.md),
@@ -210,6 +216,11 @@ after an inadequately cloned send are outside that guarantee. See
 ## Development
 
 ```bash
+go test ./...
+go vet ./...
+go test -race ./...
+
+cd adapters/etcdraft
 go test ./...
 go vet ./...
 go test -race ./...

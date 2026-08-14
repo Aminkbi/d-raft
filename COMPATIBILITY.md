@@ -111,6 +111,12 @@ The built-in reference compatibility tuple is atomic:
 - run v2: `d-raft/reference@2`, message codec v2, checker v2, observation v2;
 - run v3: `d-raft/reference@3`, message codec v3, checker v3, observation v3.
 
+The experimental production-core tuple is also atomic:
+
+- run v3: `go.etcd.io/raft/v3@3.7.0+d-raft.1`, deterministic raftpb protobuf
+  codec v1, `d-raft.etcdraft-check/common-durable-v1`, and
+  `d-raft.etcdraft-observation/v1`.
+
 The current CLI executes and minimizes only the v3 reference adapter. It can
 decode and inspect coherent v1 and v2 artifacts, but rejects their replay
 rather than pretending newer membership-aware semantics reproduced an older
@@ -121,3 +127,8 @@ membership actions, membership-aware snapshots and election-certificate
 evidence, the membership-transition witness, and membership-bearing
 observations. V2 remains snapshot-aware with static all-voter membership. Older
 tuples never acquire those newer meanings.
+
+The nested `draft-etcd` CLI executes and exactly replays only its production-core
+tuple. Exact tapes are adapter- and version-local. Cross-adapter evaluation
+uses portable scenarios and a separately versioned semantic projection rather
+than pretending implementation-specific message decisions are interchangeable.

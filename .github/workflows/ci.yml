@@ -29,8 +29,27 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Test etcd/raft adapter
+        working-directory: adapters/etcdraft
+        run: go test ./...
+
+      - name: Repeat etcd/raft determinism tests
+        working-directory: adapters/etcdraft
+        run: go test -count=20 ./...
+
       - name: Vet
         run: go vet ./...
+
+      - name: Vet etcd/raft adapter
+        working-directory: adapters/etcdraft
+        run: go vet ./...
+
+      - name: Race detector
+        run: go test -race ./...
+
+      - name: Race detector for etcd/raft adapter
+        working-directory: adapters/etcdraft
+        run: go test -race ./...
 
       - name: Compile benchmarks
         run: go test -run '^$' -bench '^$' ./...
