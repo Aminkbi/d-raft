@@ -28,6 +28,11 @@ const (
 	TracePacketScheduled  TraceEventKind = "packet_scheduled"
 	TracePacketDelivered  TraceEventKind = "packet_delivered"
 	TracePacketDropped    TraceEventKind = "packet_dropped"
+	TraceProtocolInput    TraceEventKind = "protocol_input"
+	TraceProtocolState    TraceEventKind = "protocol_state"
+	TracePersistence      TraceEventKind = "persistence"
+	TraceProcessLifecycle TraceEventKind = "process_lifecycle"
+	TraceProtocolDrop     TraceEventKind = "protocol_drop"
 )
 
 // TraceRoute is one permitted directed route in a partition trace event.
@@ -65,6 +70,10 @@ type TraceEvent struct {
 	Message      any    `json:"message,omitempty"`
 	DeliveryAtNS *int64 `json:"delivery_at_ns,omitempty"`
 	DropReason   string `json:"drop_reason,omitempty"`
+
+	Component string `json:"component,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Details   any    `json:"details,omitempty"`
 
 	Node             NodeID           `json:"node,omitempty"`
 	Link             *TraceLinkConfig `json:"link,omitempty"`

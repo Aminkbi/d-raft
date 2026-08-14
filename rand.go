@@ -150,12 +150,14 @@ func (r *Rand) Duration(min, max time.Duration) time.Duration {
 // value from r, so stream allocation order is significant.
 func (r *Rand) Split() *Rand {
 	seed := r.nextUint64()
+	r.splitCount++
+	childStream := fmt.Sprintf("%s/%d", r.stream, r.splitCount)
 	child := NewRand(seed)
 	if r.trace != nil {
-		r.splitCount++
-		childStream := fmt.Sprintf("%s/%d", r.stream, r.splitCount)
 		r.recordRandom("split", map[string]string{"child_stream": childStream}, fmt.Sprintf("0x%016x", seed))
 		child.SetTraceSink(r.trace, childStream)
+	} else {
+		child.stream = childStream
 	}
 	return child
 }
