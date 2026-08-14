@@ -19,7 +19,8 @@ import (
 
 const (
 	SchemaV1      = "d-raft.check/v1"
-	SchemaVersion = "d-raft.check/v2"
+	SchemaV2      = "d-raft.check/v2"
+	SchemaVersion = "d-raft.check/v3"
 )
 
 const (
@@ -35,6 +36,7 @@ const (
 	AppliedConflict      = "raft/applied-conflict"
 	AppliedMonotonic     = "raft/applied-monotonic"
 	SnapshotConflict     = "raft/snapshot-conflict"
+	MembershipTransition = "raft/membership-transition"
 )
 
 // NodeObservation combines independent durable/application state with an
@@ -126,8 +128,10 @@ func ValidateViolationForSchema(schema string, violation Violation) error {
 func violationSupported(schema, id string) bool {
 	switch id {
 	case ElectionSafety, ElectionCertificate, DurableTermMonotonic, DurableDoubleVote, VolatileDurableMatch, LogMatching, LeaderCompleteness, CommittedConflict, CommitMonotonic, AppliedConflict, AppliedMonotonic:
-		return schema == SchemaV1 || schema == SchemaVersion
+		return schema == SchemaV1 || schema == SchemaV2 || schema == SchemaVersion
 	case SnapshotConflict:
+		return schema == SchemaV2 || schema == SchemaVersion
+	case MembershipTransition:
 		return schema == SchemaVersion
 	default:
 		return false
@@ -143,6 +147,7 @@ type entryWitness struct {
 // Checker retains only the history needed by Raft safety properties.
 type Checker struct {
 	members []raft.NodeID
+	initial raft.Membership
 	seen    map[string]struct{}
 
 	leaders        map[uint64]raft.NodeID
@@ -163,10 +168,17 @@ type snapshotWitness struct {
 
 // New returns a checker for fixed members.
 func New(members []raft.NodeID) *Checker {
+	return NewWithMembership(members, raft.StableMembership(members, nil))
+}
+
+// NewWithMembership returns a checker for a pre-provisioned node universe and
+// explicit initial voter/learner roles.
+func NewWithMembership(members []raft.NodeID, initial raft.Membership) *Checker {
 	canonical := slices.Clone(members)
 	slices.Sort(canonical)
 	return &Checker{
 		members:        canonical,
+		initial:        raft.CloneMembership(initial),
 		seen:           make(map[string]struct{}),
 		leaders:        make(map[uint64]raft.NodeID),
 		votes:          make(map[raft.NodeID]map[uint64]raft.NodeID),
@@ -191,6 +203,7 @@ func (c *Checker) Observe(observation Observation) []Violation {
 		c.checkCommittedHistory(observation.At, node)
 		c.checkAppliedHistory(observation.At, node)
 		c.checkSnapshotHistory(observation.At, node)
+		c.checkMembershipHistory(observation.At, node)
 	}
 	c.checkLogs(observation.At, nodes)
 	for _, node := range nodes {
@@ -199,6 +212,44 @@ func (c *Checker) Observe(observation Observation) []Violation {
 		}
 	}
 	return slices.Clone(c.violations[start:])
+}
+
+func (c *Checker) checkMembershipHistory(at time.Duration, node NodeObservation) {
+	membership := raft.CloneMembership(c.initial)
+	if node.Durable.Snapshot.LastIncludedIndex > 0 && !raft.MembershipsEqual(node.Durable.Snapshot.Membership, raft.Membership{}) {
+		if !raft.ValidateMembership(node.Durable.Snapshot.Membership, c.members) {
+			c.add(at, MembershipTransition, []raft.NodeID{node.ID}, map[string]any{"snapshot": node.Durable.Snapshot.Membership})
+			return
+		}
+		membership = raft.CloneMembership(node.Durable.Snapshot.Membership)
+	}
+	for _, entry := range node.Durable.Log {
+		switch entry.Type {
+		case raft.EntryConfigJoint:
+			expectedLearners := make([]raft.NodeID, 0, len(entry.Membership.LearnersNext))
+			for _, learner := range entry.Membership.LearnersNext {
+				if !slices.Contains(entry.Membership.VotersOutgoing, learner) {
+					expectedLearners = append(expectedLearners, learner)
+				}
+			}
+			if len(entry.Data) != 0 || membership.Joint() || !entry.Membership.Joint() || !raft.ValidateMembership(entry.Membership, c.members) || !slices.Equal(entry.Membership.VotersOutgoing, membership.Voters) || !slices.Equal(entry.Membership.Learners, expectedLearners) {
+				c.add(at, MembershipTransition, []raft.NodeID{node.ID}, map[string]any{"index": entry.Index, "before": membership, "entry": entry})
+				return
+			}
+			membership = raft.CloneMembership(entry.Membership)
+		case raft.EntryConfigFinal:
+			if len(entry.Data) != 0 || !membership.Joint() || entry.Membership.Joint() || !raft.ValidateMembership(entry.Membership, c.members) || !slices.Equal(entry.Membership.Voters, membership.Voters) || !slices.Equal(entry.Membership.Learners, membership.LearnersNext) {
+				c.add(at, MembershipTransition, []raft.NodeID{node.ID}, map[string]any{"index": entry.Index, "before": membership, "entry": entry})
+				return
+			}
+			membership = raft.CloneMembership(entry.Membership)
+		default:
+			if !raft.MembershipsEqual(entry.Membership, raft.Membership{}) {
+				c.add(at, MembershipTransition, []raft.NodeID{node.ID}, map[string]any{"index": entry.Index, "entry": entry})
+				return
+			}
+		}
+	}
 }
 
 // Violations returns all unique violations observed so far.
@@ -260,7 +311,7 @@ func (c *Checker) checkSnapshotHistory(at time.Duration, node NodeObservation) {
 		return
 	}
 	if previous, exists := c.snapshots[snapshot.LastIncludedIndex]; exists {
-		if previous.Snapshot.LastIncludedTerm != snapshot.LastIncludedTerm || !slices.Equal(previous.Snapshot.Members, snapshot.Members) || !slices.Equal(previous.Snapshot.Data, snapshot.Data) {
+		if previous.Snapshot.LastIncludedTerm != snapshot.LastIncludedTerm || !slices.Equal(previous.Snapshot.Members, snapshot.Members) || !slices.Equal(previous.Snapshot.Data, snapshot.Data) || !raft.MembershipsEqual(previous.Snapshot.Membership, snapshot.Membership) {
 			c.add(at, SnapshotConflict, []raft.NodeID{previous.Node, node.ID}, map[string]any{"index": snapshot.LastIncludedIndex, "first": previous, "second": snapshotWitness{Node: node.ID, Snapshot: raft.CloneSnapshot(snapshot)}})
 		}
 	} else {
@@ -327,14 +378,18 @@ func (c *Checker) checkLeader(at time.Duration, node NodeObservation, nodes []No
 	} else {
 		c.leaders[status.Term] = node.ID
 	}
-	votes := 0
+	certified := make([]raft.NodeID, 0, len(c.members))
 	for _, voter := range c.members {
 		if c.votes[voter][status.Term] == node.ID {
-			votes++
+			certified = append(certified, voter)
 		}
 	}
-	if votes < len(c.members)/2+1 {
-		c.add(at, ElectionCertificate, []raft.NodeID{node.ID}, map[string]any{"term": status.Term, "votes": votes, "required": len(c.members)/2 + 1})
+	membership := status.ElectionMembership
+	if len(membership.Voters) == 0 {
+		membership = raft.CloneMembership(c.initial)
+	}
+	if !raft.ValidateMembership(membership, c.members) || !membership.HasQuorum(certified) {
+		c.add(at, ElectionCertificate, []raft.NodeID{node.ID}, map[string]any{"term": status.Term, "votes": certified, "membership": membership})
 	}
 	for index, committed := range c.committed {
 		if status.Term < committed.CommitTerm {
@@ -402,7 +457,7 @@ func (c *Checker) add(at time.Duration, id string, nodes []raft.NodeID, evidence
 }
 
 func entriesEqual(left, right raft.Entry) bool {
-	return left.Index == right.Index && left.Term == right.Term && left.Type == right.Type && slices.Equal(left.Data, right.Data)
+	return left.Index == right.Index && left.Term == right.Term && left.Type == right.Type && slices.Equal(left.Data, right.Data) && raft.MembershipsEqual(left.Membership, right.Membership)
 }
 
 func stringCompare(left, right raft.NodeID) int {

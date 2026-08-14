@@ -178,6 +178,24 @@ func TestArtifactValidatesPublishedReferenceV1Metadata(t *testing.T) {
 	}
 }
 
+func TestArtifactValidatesPublishedReferenceV2Metadata(t *testing.T) {
+	t.Parallel()
+
+	run := validRun()
+	run.Schema = SchemaV2
+	run.Adapter.Version = ReferenceAdapterV2
+	run.Reproducibility.MessageCodec = MessageCodecV2
+	run.Reproducibility.CheckerSchema = check.SchemaV2
+	run.Reproducibility.ObservationSchema = ObservationSchemaV2
+	var encoded bytes.Buffer
+	if err := Encode(&encoded, run); err != nil {
+		t.Fatalf("Encode legacy v2: %v", err)
+	}
+	if decoded, err := Decode(bytes.NewReader(encoded.Bytes())); err != nil || decoded.Schema != SchemaV2 {
+		t.Fatalf("Decode legacy v2: schema=%q err=%v", decoded.Schema, err)
+	}
+}
+
 func TestPublishedReferenceV1RejectsV2Witness(t *testing.T) {
 	t.Parallel()
 
@@ -235,6 +253,14 @@ func TestSnapshotActionRequiresRunV2(t *testing.T) {
 	run := validRun()
 	run.Scenario.Actions = []Action{{Kind: ActionSnapshot, Node: "a", Data: []byte("checkpoint")}}
 	if err := run.Validate(); err != nil {
+		t.Fatalf("Validate current snapshot: %v", err)
+	}
+	run.Schema = SchemaV2
+	run.Adapter.Version = ReferenceAdapterV2
+	run.Reproducibility.MessageCodec = MessageCodecV2
+	run.Reproducibility.CheckerSchema = check.SchemaV2
+	run.Reproducibility.ObservationSchema = ObservationSchemaV2
+	if err := run.Validate(); err != nil {
 		t.Fatalf("Validate v2 snapshot: %v", err)
 	}
 	run.Schema = SchemaV1
@@ -244,6 +270,145 @@ func TestSnapshotActionRequiresRunV2(t *testing.T) {
 	run.Reproducibility.ObservationSchema = ObservationSchemaV1
 	if err := run.Validate(); !errors.Is(err, ErrInvalidArtifact) {
 		t.Fatalf("v1 snapshot error = %v", err)
+	}
+}
+
+func TestMembershipActionsRequireRunV3(t *testing.T) {
+	t.Parallel()
+
+	run := validRun()
+	run.Configuration.Members = []raft.NodeID{"a", "b", "c", "d"}
+	run.Configuration.Voters = []raft.NodeID{"a", "b", "c"}
+	run.Configuration.Learners = []raft.NodeID{"d"}
+	run.Scenario.Actions = []Action{
+		{Kind: ActionBeginMembership, Voters: []raft.NodeID{"b", "c", "d"}, Learners: []raft.NodeID{"a"}},
+		{Kind: ActionFinalizeMembership},
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("Validate v3 membership: %v", err)
+	}
+	run.Schema = SchemaV2
+	run.Adapter.Version = ReferenceAdapterV2
+	run.Reproducibility.MessageCodec = MessageCodecV2
+	run.Reproducibility.CheckerSchema = check.SchemaV2
+	run.Reproducibility.ObservationSchema = ObservationSchemaV2
+	if err := run.Validate(); !errors.Is(err, ErrInvalidArtifact) {
+		t.Fatalf("v2 membership error = %v", err)
+	}
+}
+
+func TestLegacyArtifactsRejectPresentV3RoleFields(t *testing.T) {
+	t.Parallel()
+
+	run := validRun()
+	run.Schema = SchemaV2
+	run.Adapter.Version = ReferenceAdapterV2
+	run.Reproducibility.MessageCodec = MessageCodecV2
+	run.Reproducibility.CheckerSchema = check.SchemaV2
+	run.Reproducibility.ObservationSchema = ObservationSchemaV2
+	run.Scenario.Actions = []Action{{Kind: ActionSnapshot, Node: "a", Data: []byte("checkpoint")}}
+	var encoded bytes.Buffer
+	if err := Encode(&encoded, run); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		json string
+	}{
+		{"configuration empty", strings.Replace(encoded.String(), `"configuration":{`, `"configuration":{"voters":[],`, 1)},
+		{"configuration null", strings.Replace(encoded.String(), `"configuration":{`, `"configuration":{"learners":null,`, 1)},
+		{"action empty", strings.Replace(encoded.String(), `"kind":"snapshot"`, `"kind":"snapshot","voters":[]`, 1)},
+		{"action null", strings.Replace(encoded.String(), `"kind":"snapshot"`, `"kind":"snapshot","learners":null`, 1)},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := Decode(strings.NewReader(test.json)); !errors.Is(err, ErrInvalidArtifact) {
+				t.Fatalf("Decode error = %v", err)
+			}
+		})
+	}
+}
+
+func TestReferenceSchemaTuplesAreAtomic(t *testing.T) {
+	t.Parallel()
+
+	types := []struct {
+		schema      string
+		adapter     string
+		codec       string
+		checker     string
+		observation string
+	}{
+		{SchemaV1, ReferenceAdapterV1, MessageCodecV1, check.SchemaV1, ObservationSchemaV1},
+		{SchemaV2, ReferenceAdapterV2, MessageCodecV2, check.SchemaV2, ObservationSchemaV2},
+		{SchemaVersion, ReferenceAdapterV3, MessageCodecV3, check.SchemaVersion, ObservationSchemaV3},
+	}
+	configure := func(run *Run, tuple struct {
+		schema      string
+		adapter     string
+		codec       string
+		checker     string
+		observation string
+	}) {
+		run.Schema = tuple.schema
+		run.Adapter.Version = tuple.adapter
+		run.Reproducibility.MessageCodec = tuple.codec
+		run.Reproducibility.CheckerSchema = tuple.checker
+		run.Reproducibility.ObservationSchema = tuple.observation
+	}
+	for index, tuple := range types {
+		base := validRun()
+		configure(&base, tuple)
+		if err := base.Validate(); err != nil {
+			t.Fatalf("coherent tuple %s: %v", tuple.schema, err)
+		}
+		other := types[(index+1)%len(types)]
+		mutations := []struct {
+			name   string
+			mutate func(*Run)
+		}{
+			{"schema", func(run *Run) { run.Schema = other.schema }},
+			{"adapter", func(run *Run) { run.Adapter.Version = other.adapter }},
+			{"codec", func(run *Run) { run.Reproducibility.MessageCodec = other.codec }},
+			{"checker", func(run *Run) { run.Reproducibility.CheckerSchema = other.checker }},
+			{"observation", func(run *Run) { run.Reproducibility.ObservationSchema = other.observation }},
+		}
+		for _, mutation := range mutations {
+			run := base
+			mutation.mutate(&run)
+			if err := run.Validate(); !errors.Is(err, ErrInvalidArtifact) {
+				t.Fatalf("tuple %s accepted mismatched %s: %v", tuple.schema, mutation.name, err)
+			}
+		}
+	}
+}
+
+func TestResourceBudgetAccountsForRoleSets(t *testing.T) {
+	t.Parallel()
+
+	minimum := func(run Run) int {
+		for limit := 1; limit < 100_000; limit++ {
+			if validateResourceBudget(run, limit) == nil {
+				return limit
+			}
+		}
+		t.Fatal("no passing resource limit")
+		return 0
+	}
+	baseConfiguration := validRun()
+	roleConfiguration := baseConfiguration
+	roleConfiguration.Configuration.Voters = []raft.NodeID{"a", "b"}
+	roleConfiguration.Configuration.Learners = []raft.NodeID{"c"}
+	if baseMinimum, roleMinimum := minimum(baseConfiguration), minimum(roleConfiguration); roleMinimum <= baseMinimum {
+		t.Fatalf("configuration base minimum=%d role minimum=%d", baseMinimum, roleMinimum)
+	}
+	baseAction := validRun()
+	baseAction.Scenario.Actions = []Action{{Kind: ActionPropose}}
+	roleAction := baseAction
+	roleAction.Scenario.Actions = []Action{{Kind: ActionPropose, Voters: []raft.NodeID{"a", "b"}, Learners: []raft.NodeID{"c"}}}
+	if baseMinimum, roleMinimum := minimum(baseAction), minimum(roleAction); roleMinimum <= baseMinimum {
+		t.Fatalf("action base minimum=%d role minimum=%d", baseMinimum, roleMinimum)
 	}
 }
 

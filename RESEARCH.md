@@ -16,9 +16,11 @@ d-raft should produce a versioned counterexample that is:
 - independently checkable from a structured invariant witness; and
 - portable across supported implementations and versions through adapters.
 
-The intended research contribution is the combination of portability,
-semantic reduction, explicit evidence, and cross-implementation replay. The
-project does **not** claim novelty for deterministic simulation, a pure
+The working research hypothesis is that combining portability, semantic
+reduction, explicit evidence, and cross-implementation replay will improve the
+usefulness of counterexamples. Novelty and benefit remain to be established by
+the related-work comparison, production adapters, and comparative evaluation.
+The project does **not** claim novelty for deterministic simulation, a pure
 state-machine interface, seed replay, trace minimization, or implementation
 trace validation in isolation.
 
@@ -29,13 +31,15 @@ The repository currently contains:
 1. A protocol-neutral, single-threaded discrete-event runtime with stable
    random streams, virtual time, network faults, and ordered observations.
 2. A pure Raft reference state machine implementing elections, heartbeats, log
-   replication, current-term commit, durable snapshots, safe compaction, and
-   leader no-op entries.
-3. A cluster harness with durable stores, explicit persistence acknowledgement,
-   input barriers, partitions, process incarnations, and crash/restart.
-4. An independent checker for election safety, certificates, durable votes,
-   term monotonicity, log matching, leader completeness, and committed/applied
-   conflicts.
+   replication, current-term commit, durable snapshots, safe compaction,
+   joint-consensus membership changes, learners, and leader no-op entries.
+3. A cluster harness with configurable initial voters and learners, explicit
+   begin/finalize membership actions, durable stores, persistence
+   acknowledgement, input barriers, partitions, process incarnations, and
+   crash/restart.
+4. A package-separated checker for election safety, membership-aware election
+   certificates, durable votes, term monotonicity, log matching, leader
+   completeness, membership-transition history, and committed/applied conflicts.
 5. A semantic decision schema with seeded recording, exact tape replay, stable
    causal identities, and domain-drift rejection.
 6. A bounded, payload-lossless decoder for the known fields of the separate
@@ -52,7 +56,7 @@ claimed research novelty.
    Go toolchains, implementation versions, and independent Raft adapters?
 2. Under equal transition and wall-clock budgets, how do randomized and bounded
    systematic search compare in time to first failure and distinct failures?
-3. How much do semantic, dependency-aware reduction and generic delta debugging
+3. How much do semantic-context-aware reduction and generic delta debugging
    reduce a failing execution while preserving the same violation fingerprint?
 4. Does a minimized counterexample with a structured witness reduce diagnosis
    time compared with a seed and an unminimized event trace?
@@ -64,7 +68,7 @@ claimed research novelty.
 ```text
 versioned scenario
   -> random or bounded systematic execution
-  -> independent invariant witness
+  -> package-separated invariant witness
   -> self-describing run artifact
   -> exact replay
   -> fingerprint-preserving semantic minimization
@@ -81,17 +85,22 @@ violation witness.
 
 - [x] Deterministic virtual-time runtime and faultable network
 - [x] Pure durable Raft elections and log replication
-- [x] Independent safety checker and structured fingerprints
+- [x] Package-separated safety checker and structured fingerprints
 - [x] Semantic decision recording and exact replay
 - [x] Payload-lossless observational trace decoding
 - [x] Versioned, self-describing run artifacts and `run`/`replay`/`inspect` CLI
 - [x] Prefix replay and bounded depth-first choice exploration
 - [x] Fingerprint-preserving semantic delta debugging and domain shrinkers
 - [x] Snapshot installation and safe log compaction
-- [ ] Joint-consensus membership changes and learners
+- [x] Joint-consensus membership changes and learners
 - [ ] Production Raft adapter with declared capability boundaries
 - [ ] Chain-of-Blocks state-machine oracle and seeded mutant corpus
 - [ ] Comparative evaluation, public counterexample corpus, and archival release
+
+The completed membership milestone is deliberately scoped to role changes over
+a pre-provisioned universe with explicit two-phase finalization. It does not
+provide dynamic transport membership, automatic finalization, or an automatic
+learner catch-up/readiness gate.
 
 ## Evaluation design
 
@@ -144,6 +153,10 @@ artifact.
 - Reference-model and checker defects can be correlated despite package
   separation; mutants, independent adapters, and external validation mitigate
   but do not eliminate this risk.
+- Membership checks validate transition history and quorum-certificate evidence,
+  but the election certificate contains the implementation-reported election
+  membership. This is structured evidence, not a mechanized proof of the
+  implementation's membership semantics.
 - Cross-implementation semantics may be narrower than any one implementation's
   feature set.
 - Results from one production adapter or one mutant corpus may not generalize.

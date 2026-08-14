@@ -26,7 +26,12 @@ optionally midpoint. Results separately report:
 - truncation by the run budget.
 
 The first matching violation can be emitted directly as a normal
-`d-raft.run/v2` artifact and replayed with `draft replay`.
+`d-raft.run/v3` artifact and replayed with `draft replay`.
+
+Exploration branches only over semantic timer, network, and storage choices; it
+does not synthesize action schedules or target memberships. The `explore.DFS`
+API can execute a caller-constructed v3 membership scenario, while the current
+`draft explore` command generates a steady all-voter scenario.
 
 ## Bounds and interpretation
 

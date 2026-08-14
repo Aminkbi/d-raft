@@ -26,9 +26,12 @@ var (
 	ErrTransportIdentity = errors.New("raftsim: transport identity mismatch")
 )
 
-// Config defines a fixed-membership deterministic Raft cluster.
+// Config defines a deterministic Raft cluster over a fixed provisioned node
+// universe. Voting and learner roles may change through joint consensus.
 type Config struct {
 	Members            []raft.NodeID
+	Voters             []raft.NodeID
+	Learners           []raft.NodeID
 	Seed               uint64
 	Network            sim.LinkConfig
 	ElectionTimeoutMin time.Duration
@@ -79,6 +82,12 @@ func (c Config) validate() error {
 		}
 		if index > 0 && member == members[index-1] {
 			return fmt.Errorf("%w: duplicate member %q", ErrInvalidConfig, member)
+		}
+	}
+	if len(c.Voters) > 0 || len(c.Learners) > 0 {
+		membership := raft.StableMembership(c.Voters, c.Learners)
+		if !raft.ValidateMembership(membership, members) {
+			return fmt.Errorf("%w: invalid voter or learner sets", ErrInvalidConfig)
 		}
 	}
 	if err := c.Network.Validate(); err != nil {
@@ -165,6 +174,13 @@ func New(config Config) (*Cluster, error) {
 	}
 	members := slices.Clone(config.Members)
 	slices.Sort(members)
+	config.Members = slices.Clone(members)
+	config.Voters = slices.Clone(config.Voters)
+	config.Learners = slices.Clone(config.Learners)
+	initialMembership := raft.StableMembership(config.Voters, config.Learners)
+	if len(config.Voters) == 0 && len(config.Learners) == 0 {
+		initialMembership = raft.StableMembership(members, nil)
+	}
 	simulator := sim.New()
 	rootRandom := sim.NewRand(config.Seed)
 	if config.Trace != nil {
@@ -190,7 +206,7 @@ func New(config Config) (*Cluster, error) {
 		simulator: simulator,
 		router:    router,
 		processes: make(map[raft.NodeID]*process, len(members)),
-		checker:   check.New(members),
+		checker:   check.NewWithMembership(members, initialMembership),
 	}
 	for _, id := range members {
 		cluster.processes[id] = &process{up: true, incarnation: 1, random: rootRandom.Split()}
@@ -317,6 +333,65 @@ func (c *Cluster) Snapshot(id raft.NodeID, data []byte) error {
 	}
 	index := process.store.AppliedIndex
 	if err := c.submit(id, queuedInput{input: raft.Input{Kind: raft.InputSnapshot, SnapshotIndex: index, SnapshotData: slices.Clone(data)}, incarnation: process.incarnation}); err != nil {
+		return err
+	}
+	c.observe()
+	return c.err
+}
+
+// BeginMembershipChange appends a joint configuration through the current
+// leader. Every node must already belong to the pre-provisioned Members
+// universe.
+func (c *Cluster) BeginMembershipChange(voters, learners []raft.NodeID) error {
+	leader, ok := c.Leader()
+	if !ok {
+		return ErrNoLeader
+	}
+	return c.BeginMembershipChangeTo(leader, voters, learners)
+}
+
+// BeginMembershipChangeTo targets a specific live leader.
+func (c *Cluster) BeginMembershipChangeTo(id raft.NodeID, voters, learners []raft.NodeID) error {
+	process, ok := c.processes[id]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownNode, id)
+	}
+	if !process.up {
+		return fmt.Errorf("%w: %q", ErrNodeDown, id)
+	}
+	if process.node.Status().Role != raft.Leader {
+		return raft.ErrNotLeader
+	}
+	if err := c.submit(id, queuedInput{input: raft.Input{Kind: raft.InputBeginMembership, Voters: slices.Clone(voters), Learners: slices.Clone(learners)}, incarnation: process.incarnation}); err != nil {
+		return err
+	}
+	c.observe()
+	return c.err
+}
+
+// FinalizeMembershipChange appends the stable incoming configuration through
+// the current leader after the joint entry has committed.
+func (c *Cluster) FinalizeMembershipChange() error {
+	leader, ok := c.Leader()
+	if !ok {
+		return ErrNoLeader
+	}
+	return c.FinalizeMembershipChangeTo(leader)
+}
+
+// FinalizeMembershipChangeTo targets a specific live leader.
+func (c *Cluster) FinalizeMembershipChangeTo(id raft.NodeID) error {
+	process, ok := c.processes[id]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownNode, id)
+	}
+	if !process.up {
+		return fmt.Errorf("%w: %q", ErrNodeDown, id)
+	}
+	if process.node.Status().Role != raft.Leader {
+		return raft.ErrNotLeader
+	}
+	if err := c.submit(id, queuedInput{input: raft.Input{Kind: raft.InputFinalizeMembership}, incarnation: process.incarnation}); err != nil {
 		return err
 	}
 	c.observe()
@@ -480,7 +555,7 @@ func (c *Cluster) CrashAfterNextPersist(id raft.NodeID) error {
 
 func (c *Cluster) start(id raft.NodeID) error {
 	process := c.processes[id]
-	node, err := raft.New(raft.Config{ID: id, Members: c.members, AppliedIndex: process.store.AppliedIndex}, process.store.State)
+	node, err := raft.New(raft.Config{ID: id, Members: c.members, Voters: c.config.Voters, Learners: c.config.Learners, AppliedIndex: process.store.AppliedIndex}, process.store.State)
 	if err != nil {
 		return err
 	}
@@ -653,6 +728,10 @@ func (c *Cluster) resetElectionTimer(id raft.NodeID) error {
 	process := c.processes[id]
 	if process.electionEvent != 0 {
 		c.simulator.Cancel(process.electionEvent)
+		process.electionEvent = 0
+	}
+	if !process.node.Status().Membership.IsVoter(id) {
+		return nil
 	}
 	process.electionGeneration++
 	generation := process.electionGeneration
@@ -920,6 +999,10 @@ func inputAction(input raft.Input) string {
 		return "persisted"
 	case raft.InputSnapshot:
 		return "snapshot"
+	case raft.InputBeginMembership:
+		return "begin_membership"
+	case raft.InputFinalizeMembership:
+		return "finalize_membership"
 	default:
 		return "unknown"
 	}

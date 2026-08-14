@@ -8,23 +8,47 @@ import (
 	"testing"
 )
 
-func TestSnapshotMessageJSONV2GoldenAndClone(t *testing.T) {
+func TestSnapshotMessageJSONV3GoldenAndClone(t *testing.T) {
 	t.Parallel()
 
-	message := Message{Type: InstallSnapshot, From: "a", To: "b", Term: math.MaxUint64, Sequence: 7, Snapshot: Snapshot{LastIncludedIndex: math.MaxUint64, LastIncludedTerm: 9, Members: []NodeID{"a", "b"}, Data: []byte{0xff}}}
+	message := Message{Type: InstallSnapshot, From: "a", To: "b", Term: math.MaxUint64, Sequence: 7, Snapshot: Snapshot{LastIncludedIndex: math.MaxUint64, LastIncludedTerm: 9, Members: []NodeID{"a", "b"}, Data: []byte{0xff}, Membership: stableMembership([]NodeID{"a", "b"}, nil)}}
 	encoded, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"Type":5,"From":"a","To":"b","Term":18446744073709551615,"Sequence":7,"LastLogIndex":0,"LastLogTerm":0,"VoteGranted":false,"PrevLogIndex":0,"PrevLogTerm":0,"Entries":null,"LeaderCommit":0,"Success":false,"MatchIndex":0,"RejectHint":0,"Snapshot":{"LastIncludedIndex":18446744073709551615,"LastIncludedTerm":9,"Members":["a","b"],"Data":"/w=="}}`
+	want := `{"Type":5,"From":"a","To":"b","Term":18446744073709551615,"Sequence":7,"LastLogIndex":0,"LastLogTerm":0,"VoteGranted":false,"PrevLogIndex":0,"PrevLogTerm":0,"Entries":null,"LeaderCommit":0,"Success":false,"MatchIndex":0,"RejectHint":0,"Snapshot":{"LastIncludedIndex":18446744073709551615,"LastIncludedTerm":9,"Members":["a","b"],"Data":"/w==","Membership":{"Voters":["a","b"],"VotersOutgoing":null,"Learners":null,"LearnersNext":null}}}`
 	if string(encoded) != want {
-		t.Fatalf("codec v2 JSON\n got: %s\nwant: %s", encoded, want)
+		t.Fatalf("codec v3 JSON\n got: %s\nwant: %s", encoded, want)
 	}
 	clone := CloneMessage(message)
 	message.Snapshot.Members[0] = "changed"
 	message.Snapshot.Data[0] = 0
-	if clone.Snapshot.Members[0] != "a" || clone.Snapshot.Data[0] != 0xff {
+	message.Snapshot.Membership.Voters[0] = "changed"
+	if clone.Snapshot.Members[0] != "a" || clone.Snapshot.Data[0] != 0xff || clone.Snapshot.Membership.Voters[0] != "a" {
 		t.Fatalf("clone changed: %+v", clone.Snapshot)
+	}
+}
+
+func TestEntryMembershipJSONV3GoldenAndClone(t *testing.T) {
+	t.Parallel()
+
+	joint := Membership{Voters: []NodeID{"b", "c", "d"}, VotersOutgoing: []NodeID{"a", "b", "c"}, LearnersNext: []NodeID{"a"}}
+	message := Message{Type: AppendEntries, From: "b", To: "d", Term: 2, Sequence: 9, Entries: []Entry{{Index: 1, Term: 2, Type: EntryConfigJoint, Membership: joint}}}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"Type":3,"From":"b","To":"d","Term":2,"Sequence":9,"LastLogIndex":0,"LastLogTerm":0,"VoteGranted":false,"PrevLogIndex":0,"PrevLogTerm":0,"Entries":[{"Index":1,"Term":2,"Type":3,"Data":null,"Membership":{"Voters":["b","c","d"],"VotersOutgoing":["a","b","c"],"Learners":null,"LearnersNext":["a"]}}],"LeaderCommit":0,"Success":false,"MatchIndex":0,"RejectHint":0,"Snapshot":{"LastIncludedIndex":0,"LastIncludedTerm":0,"Members":null,"Data":null,"Membership":{"Voters":null,"VotersOutgoing":null,"Learners":null,"LearnersNext":null}}}`
+	if string(encoded) != want {
+		t.Fatalf("codec v3 JSON\n got: %s\nwant: %s", encoded, want)
+	}
+	clone := CloneMessage(message)
+	message.Entries[0].Membership.Voters[0] = "changed"
+	message.Entries[0].Membership.VotersOutgoing[0] = "changed"
+	message.Entries[0].Membership.LearnersNext[0] = "changed"
+	wantMembership := Membership{Voters: []NodeID{"b", "c", "d"}, VotersOutgoing: []NodeID{"a", "b", "c"}, LearnersNext: []NodeID{"a"}}
+	if !MembershipsEqual(clone.Entries[0].Membership, wantMembership) {
+		t.Fatalf("clone changed: %+v", clone.Entries[0].Membership)
 	}
 }
 
@@ -276,6 +300,229 @@ func TestPersistentStateRejectsImpossibleTermsAndEntryTypes(t *testing.T) {
 	effects := mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: InstallSnapshot, From: "b", To: "a", Term: 2, Snapshot: Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 3, Members: installMembers}}})
 	if len(effects) != 2 || effects[1].Message.Success {
 		t.Fatalf("future-term snapshot effects = %+v", effects)
+	}
+}
+
+func TestLearnerNeitherCampaignsNorVotes(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c"}
+	node, err := New(Config{ID: "c", Members: members, Voters: []NodeID{"a", "b"}, Learners: []NodeID{"c"}}, PersistentState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effects, err := node.Step(Input{Kind: InputElectionTimeout}); err != nil || len(effects) != 0 || node.Status().Term != 0 {
+		t.Fatalf("learner election effects=%+v status=%+v err=%v", effects, node.Status(), err)
+	}
+	_, after := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: RequestVote, From: "a", To: "c", Term: 1}}))
+	response := findMessage(t, after, RequestVoteResponse, "a")
+	if response.VoteGranted {
+		t.Fatalf("learner granted vote: %+v", response)
+	}
+}
+
+func TestJointElectionRequiresBothMajorities(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c", "d"}
+	joint := Membership{Voters: []NodeID{"b", "c", "d"}, VotersOutgoing: []NodeID{"a", "b", "c"}, LearnersNext: []NodeID{"a"}}
+	state := PersistentState{HardState: HardState{CurrentTerm: 1}, Log: []Entry{{Index: 1, Term: 1, Type: EntryConfigJoint, Membership: joint}}}
+	node, err := New(Config{ID: "b", Members: members, Voters: []NodeID{"a", "b", "c"}, Learners: []NodeID{"d"}}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, election := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputElectionTimeout}))
+	requestA := findMessage(t, election, RequestVote, "a")
+	_ = findMessage(t, election, RequestVote, "c")
+	_ = findMessage(t, election, RequestVote, "d")
+	if effects := mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: RequestVoteResponse, From: "a", To: "b", Term: requestA.Term, VoteGranted: true}}); len(effects) != 0 || node.Status().Role != Candidate {
+		t.Fatalf("old-majority-only effects=%+v status=%+v", effects, node.Status())
+	}
+	_, _ = acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: RequestVoteResponse, From: "d", To: "b", Term: requestA.Term, VoteGranted: true}}))
+	if status := node.Status(); status.Role != Leader || !slices.Equal(status.ElectionVotes, []NodeID{"a", "b", "d"}) || !MembershipsEqual(status.ElectionMembership, joint) {
+		t.Fatalf("joint leader status=%+v", status)
+	}
+}
+
+func TestDurableUnacknowledgedJointConfigurationRecovers(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b"}
+	config := Config{ID: "a", Members: members, Voters: []NodeID{"a"}, Learners: []NodeID{"b"}}
+	node, err := New(config, PersistentState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputElectionTimeout}))
+	effects := mustStep(t, node, Input{Kind: InputBeginMembership, Voters: []NodeID{"b"}, Learners: []NodeID{"a"}})
+	if len(effects) != 1 || effects[0].Kind != EffectPersist || effects[0].State.HardState.CommitIndex != 1 || len(effects[0].State.Log) != 2 || effects[0].State.Log[1].Type != EntryConfigJoint {
+		t.Fatalf("joint persistence=%+v", effects)
+	}
+	restarted, err := New(Config{ID: "a", Members: members, Voters: []NodeID{"a"}, Learners: []NodeID{"b"}, AppliedIndex: 1}, effects[0].State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := restarted.Status(); !status.Membership.Joint() || status.CommitIndex != 1 || status.LastLogIndex != 2 {
+		t.Fatalf("restarted status=%+v", status)
+	}
+}
+
+func TestDurableUnacknowledgedFinalConfigurationRecovers(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b"}
+	joint := Membership{Voters: []NodeID{"b"}, VotersOutgoing: []NodeID{"a"}, LearnersNext: []NodeID{"a"}}
+	final := stableMembership([]NodeID{"b"}, []NodeID{"a"})
+	state := PersistentState{
+		HardState: HardState{CurrentTerm: 1, CommitIndex: 2},
+		Log: []Entry{
+			{Index: 1, Term: 1, Type: EntryNoop},
+			{Index: 2, Term: 1, Type: EntryConfigJoint, Membership: joint},
+			{Index: 3, Term: 1, Type: EntryConfigFinal, Membership: final},
+		},
+	}
+	restarted, err := New(Config{ID: "a", Members: members, Voters: []NodeID{"a"}, Learners: []NodeID{"b"}, AppliedIndex: 2}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := restarted.Status()
+	if status.Membership.Joint() || !slices.Equal(status.Membership.Voters, []NodeID{"b"}) || !slices.Equal(status.Membership.Learners, []NodeID{"a"}) || status.CommitIndex != 2 || status.LastLogIndex != 3 {
+		t.Fatalf("restarted status=%+v", status)
+	}
+	if effects := restarted.Start(); len(effects) != 0 {
+		t.Fatalf("removed node restart effects=%+v", effects)
+	}
+}
+
+func TestUncommittedJointConfigurationCanBeTruncated(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c", "d"}
+	initialVoters := []NodeID{"a", "b", "c"}
+	joint := Membership{Voters: []NodeID{"b", "c", "d"}, VotersOutgoing: initialVoters, LearnersNext: []NodeID{"a"}}
+	state := PersistentState{HardState: HardState{CurrentTerm: 1}, Log: []Entry{{Index: 1, Term: 1, Type: EntryConfigJoint, Membership: joint}}}
+	node, err := New(Config{ID: "b", Members: members, Voters: initialVoters, Learners: []NodeID{"d"}}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persist, _ := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntries, From: "c", To: "b", Term: 2, Entries: []Entry{{Index: 1, Term: 2, Type: EntryCommand, Data: []byte("replacement")}}}}))
+	status := node.Status()
+	if len(persist.State.Log) != 1 || persist.State.Log[0].Type != EntryCommand || status.Membership.Joint() || !slices.Equal(status.Membership.Voters, initialVoters) || !slices.Equal(status.Membership.Learners, []NodeID{"d"}) {
+		t.Fatalf("persist=%+v status=%+v", persist.State, status)
+	}
+}
+
+func TestRemovedVoterDoesNotCampaignAfterFinalization(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c", "d"}
+	joint := Membership{Voters: []NodeID{"b", "c", "d"}, VotersOutgoing: []NodeID{"a", "b", "c"}, LearnersNext: []NodeID{"a"}}
+	final := stableMembership([]NodeID{"b", "c", "d"}, []NodeID{"a"})
+	state := PersistentState{HardState: HardState{CurrentTerm: 1, CommitIndex: 2}, Log: []Entry{{Index: 1, Term: 1, Type: EntryConfigJoint, Membership: joint}, {Index: 2, Term: 1, Type: EntryConfigFinal, Membership: final}}}
+	node, err := New(Config{ID: "a", Members: members, Voters: []NodeID{"a", "b", "c"}, Learners: []NodeID{"d"}, AppliedIndex: 2}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effects := node.Start(); len(effects) != 0 {
+		t.Fatalf("removed voter start effects=%+v", effects)
+	}
+	if effects, err := node.Step(Input{Kind: InputElectionTimeout}); err != nil || len(effects) != 0 || node.Status().Term != 1 {
+		t.Fatalf("removed voter election effects=%+v err=%v status=%+v", effects, err, node.Status())
+	}
+}
+
+func TestJointConsensusRequiresBothMajoritiesAndFinalizes(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c", "d"}
+	node, err := New(Config{ID: "a", Members: members, Voters: []NodeID{"a", "b", "c"}, Learners: []NodeID{"d"}}, PersistentState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, election := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputElectionTimeout}))
+	request := findMessage(t, election, RequestVote, "b")
+	_, leaderEffects := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: RequestVoteResponse, From: "b", To: "a", Term: request.Term, VoteGranted: true}}))
+	if node.Status().Role != Leader {
+		t.Fatalf("status = %+v", node.Status())
+	}
+	_ = findMessage(t, leaderEffects, AppendEntries, "d")
+
+	_, jointEffects := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputBeginMembership, Voters: []NodeID{"b", "c", "d"}, Learners: []NodeID{"a"}}))
+	jointB := findMessage(t, jointEffects, AppendEntries, "b")
+	jointD := findMessage(t, jointEffects, AppendEntries, "d")
+	if len(jointB.Entries) == 0 || jointB.Entries[len(jointB.Entries)-1].Type != EntryConfigJoint {
+		t.Fatalf("joint append = %+v", jointB)
+	}
+	if _, err := node.Step(Input{Kind: InputFinalizeMembership}); !errors.Is(err, ErrMembershipInProgress) {
+		t.Fatalf("premature finalize error = %v", err)
+	}
+	oldPersist, oldApplied := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntriesResponse, From: "b", To: "a", Term: request.Term, Sequence: jointB.Sequence, Success: true, MatchIndex: 2}}))
+	if oldPersist.State.HardState.CommitIndex != 1 || len(oldApplied) != 1 || node.Status().CommitIndex != 1 {
+		t.Fatalf("old-only quorum persist=%+v effects=%+v status=%+v", oldPersist.State, oldApplied, node.Status())
+	}
+	jointPersist, jointApplied := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntriesResponse, From: "d", To: "a", Term: request.Term, Sequence: jointD.Sequence, Success: true, MatchIndex: 2}}))
+	if jointPersist.State.HardState.CommitIndex != 2 || !node.Status().Membership.Joint() || len(jointApplied) != 1 {
+		t.Fatalf("joint persist=%+v effects=%+v status=%+v", jointPersist.State, jointApplied, node.Status())
+	}
+	_, commandEffects := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputProposal, Data: []byte("joint-command")}))
+	commandB := findMessage(t, commandEffects, AppendEntries, "b")
+	commandD := findMessage(t, commandEffects, AppendEntries, "d")
+	if _, err := node.Step(Input{Kind: InputFinalizeMembership}); !errors.Is(err, ErrMembershipInProgress) {
+		t.Fatalf("finalize over uncommitted command error = %v", err)
+	}
+	if effects := mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntriesResponse, From: "b", To: "a", Term: request.Term, Sequence: commandB.Sequence, Success: true, MatchIndex: 3}}); len(effects) != 0 {
+		t.Fatalf("partial joint command effects = %+v", effects)
+	}
+	commandPersist, commandApplied := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntriesResponse, From: "d", To: "a", Term: request.Term, Sequence: commandD.Sequence, Success: true, MatchIndex: 3}}))
+	if commandPersist.State.HardState.CommitIndex != 3 || len(commandApplied) != 1 {
+		t.Fatalf("command persist=%+v effects=%+v", commandPersist.State, commandApplied)
+	}
+
+	_, finalEffects := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputFinalizeMembership}))
+	finalB := findMessage(t, finalEffects, AppendEntries, "b")
+	finalD := findMessage(t, finalEffects, AppendEntries, "d")
+	if effects := mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntriesResponse, From: "b", To: "a", Term: request.Term, Sequence: finalB.Sequence, Success: true, MatchIndex: 4}}); len(effects) != 0 || node.Status().CommitIndex != 3 {
+		t.Fatalf("one-new-voter effects=%+v status=%+v", effects, node.Status())
+	}
+	finalPersist, finalApplied := acknowledgeOnlyPersist(t, node, mustStep(t, node, Input{Kind: InputMessage, Message: Message{Type: AppendEntriesResponse, From: "d", To: "a", Term: request.Term, Sequence: finalD.Sequence, Success: true, MatchIndex: 4}}))
+	status := node.Status()
+	if finalPersist.State.HardState.CommitIndex != 4 || status.Role != Follower || status.Membership.Joint() || !slices.Equal(status.Membership.Voters, []NodeID{"b", "c", "d"}) || !slices.Equal(status.Membership.Learners, []NodeID{"a"}) || len(finalApplied) != 1 {
+		t.Fatalf("final persist=%+v effects=%+v status=%+v", finalPersist.State, finalApplied, status)
+	}
+}
+
+func TestMembershipTransitionsRecoverFromDurableLog(t *testing.T) {
+	t.Parallel()
+
+	members := []NodeID{"a", "b", "c", "d"}
+	initial := Config{ID: "b", Members: members, Voters: []NodeID{"a", "b", "c"}, Learners: []NodeID{"d"}, AppliedIndex: 2}
+	joint := Membership{Voters: []NodeID{"b", "c", "d"}, VotersOutgoing: []NodeID{"a", "b", "c"}, LearnersNext: []NodeID{"a"}}
+	final := stableMembership([]NodeID{"b", "c", "d"}, []NodeID{"a"})
+	state := PersistentState{
+		HardState: HardState{CurrentTerm: 1, CommitIndex: 2},
+		Log: []Entry{
+			{Index: 1, Term: 1, Type: EntryConfigJoint, Membership: joint},
+			{Index: 2, Term: 1, Type: EntryConfigFinal, Membership: final},
+		},
+	}
+	node, err := New(initial, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := node.Status(); status.Membership.Joint() || !slices.Equal(status.Membership.Voters, final.Voters) || !slices.Equal(status.Membership.Learners, final.Learners) {
+		t.Fatalf("recovered membership = %+v", status.Membership)
+	}
+	invalid := state
+	invalid.Log = invalid.Log[1:]
+	invalid.Log[0].Index = 1
+	invalid.HardState.CommitIndex = 1
+	if _, err := New(Config{ID: "b", Members: members, Voters: initial.Voters, Learners: initial.Learners, AppliedIndex: 1}, invalid); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("one-step state error = %v", err)
+	}
+	uncommittedPrefix := state
+	uncommittedPrefix.HardState.CommitIndex = 0
+	if _, err := New(Config{ID: "b", Members: members, Voters: initial.Voters, Learners: initial.Learners}, uncommittedPrefix); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("final after uncommitted prefix error = %v", err)
 	}
 }
 

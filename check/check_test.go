@@ -63,6 +63,27 @@ func TestCheckerAcceptsCertifiedLeader(t *testing.T) {
 	}
 }
 
+func TestCheckerLegacyCertificateFallbackUsesInitialRoles(t *testing.T) {
+	t.Parallel()
+
+	members := []raft.NodeID{"a", "b", "c"}
+	checker := NewWithMembership(members, raft.StableMembership([]raft.NodeID{"a"}, []raft.NodeID{"b", "c"}))
+	checker.Observe(Observation{Members: members, Nodes: []NodeObservation{
+		node("a", raft.HardState{CurrentTerm: 1, VotedFor: "a"}, nil),
+		node("b", raft.HardState{CurrentTerm: 1}, nil),
+		node("c", raft.HardState{CurrentTerm: 1}, nil),
+	}})
+	leader := raft.Status{ID: "a", Role: raft.Leader, Term: 1, VotedFor: "a"}
+	violations := checker.Observe(Observation{Members: members, Nodes: []NodeObservation{
+		node("a", raft.HardState{CurrentTerm: 1, VotedFor: "a"}, &leader),
+		node("b", raft.HardState{CurrentTerm: 1}, nil),
+		node("c", raft.HardState{CurrentTerm: 1}, nil),
+	}})
+	if len(violations) != 0 {
+		t.Fatalf("valid initial-role election violations = %+v", violations)
+	}
+}
+
 func TestCheckerFindsElectionSafetyAndMissingCertificate(t *testing.T) {
 	t.Parallel()
 
@@ -143,6 +164,25 @@ func TestCheckerHandlesMaximumLogIndex(t *testing.T) {
 	checker := New(members)
 	violations := checker.Observe(Observation{Members: members, Nodes: []NodeObservation{{ID: "a", Durable: state}, {ID: "b", Durable: raft.ClonePersistentState(state)}}})
 	if len(violations) != 0 {
+		t.Fatalf("violations = %+v", violations)
+	}
+}
+
+func TestCheckerRejectsOneStepMembershipReplacement(t *testing.T) {
+	t.Parallel()
+
+	members := []raft.NodeID{"a", "b", "c", "d"}
+	checker := NewWithMembership(members, raft.StableMembership([]raft.NodeID{"a", "b", "c"}, []raft.NodeID{"d"}))
+	state := raft.PersistentState{
+		HardState: raft.HardState{CurrentTerm: 1},
+		Log:       []raft.Entry{{Index: 1, Term: 1, Type: raft.EntryConfigFinal, Membership: raft.StableMembership([]raft.NodeID{"b", "c", "d"}, []raft.NodeID{"a"})}},
+	}
+	violations := checker.Observe(Observation{Members: members, Nodes: []NodeObservation{{ID: "a", Durable: state}}})
+	found := false
+	for _, violation := range violations {
+		found = found || violation.ID == MembershipTransition
+	}
+	if !found {
 		t.Fatalf("violations = %+v", violations)
 	}
 }

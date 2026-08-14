@@ -18,6 +18,8 @@ var (
 	ErrUnexpectedPersistence = errors.New("raft: unexpected persistence acknowledgement")
 	ErrTermExhausted         = errors.New("raft: term space exhausted")
 	ErrIndexExhausted        = errors.New("raft: log index space exhausted")
+	ErrNotVoter              = errors.New("raft: local node is not a voter")
+	ErrMembershipInProgress  = errors.New("raft: membership change is in progress")
 )
 
 // NodeID identifies a Raft member.
@@ -51,15 +53,17 @@ type EntryType uint8
 const (
 	EntryNoop EntryType = iota + 1
 	EntryCommand
-	EntryConfiguration
+	EntryConfigJoint
+	EntryConfigFinal
 )
 
 // Entry is one durable Raft log entry.
 type Entry struct {
-	Index uint64
-	Term  uint64
-	Type  EntryType
-	Data  []byte
+	Index      uint64
+	Term       uint64
+	Type       EntryType
+	Data       []byte
+	Membership Membership
 }
 
 // HardState is the durable scalar Raft state.
@@ -70,12 +74,14 @@ type HardState struct {
 }
 
 // Snapshot is an atomic application and log-prefix checkpoint. Members is the
-// configuration in force at LastIncludedIndex.
+// pre-provisioned node universe; Membership is the voting configuration in
+// force at LastIncludedIndex. A zero Membership decodes legacy static snapshots.
 type Snapshot struct {
 	LastIncludedIndex uint64
 	LastIncludedTerm  uint64
 	Members           []NodeID
 	Data              []byte
+	Membership        Membership
 }
 
 // PersistentState is the atomically persisted reference-model state. The
@@ -87,11 +93,14 @@ type PersistentState struct {
 	Log       []Entry
 }
 
-// Config describes a fixed-membership reference node. Members are sorted by
-// NodeID internally so message emission order does not depend on caller order.
+// Config describes one node in a pre-provisioned universe. Voters and Learners
+// select initial roles; when both are empty every Member is a voter. Node sets
+// are sorted internally so message emission order is caller-order independent.
 type Config struct {
 	ID           NodeID
 	Members      []NodeID
+	Voters       []NodeID
+	Learners     []NodeID
 	AppliedIndex uint64
 }
 
@@ -112,12 +121,26 @@ func (c Config) validate(state PersistentState) error {
 	if !slices.Contains(members, c.ID) {
 		return fmt.Errorf("%w: local node %q is not a member", ErrInvalidConfig, c.ID)
 	}
+	membership, valid := initialMembership(c, members)
+	if !valid {
+		return fmt.Errorf("%w: invalid voter or learner sets", ErrInvalidConfig)
+	}
 	if state.Snapshot.LastIncludedIndex == 0 {
-		if state.Snapshot.LastIncludedTerm != 0 || len(state.Snapshot.Members) != 0 || len(state.Snapshot.Data) != 0 {
+		if state.Snapshot.LastIncludedTerm != 0 || len(state.Snapshot.Members) != 0 || len(state.Snapshot.Data) != 0 || !membershipIsZero(state.Snapshot.Membership) {
 			return fmt.Errorf("%w: zero snapshot carries metadata", ErrInvalidState)
 		}
-	} else if state.Snapshot.LastIncludedTerm == 0 || state.Snapshot.LastIncludedTerm > state.HardState.CurrentTerm || !slices.Equal(state.Snapshot.Members, members) {
-		return fmt.Errorf("%w: invalid snapshot boundary or membership", ErrInvalidState)
+	} else {
+		if state.Snapshot.LastIncludedTerm == 0 || state.Snapshot.LastIncludedTerm > state.HardState.CurrentTerm || !slices.Equal(state.Snapshot.Members, members) {
+			return fmt.Errorf("%w: invalid snapshot boundary or membership", ErrInvalidState)
+		}
+		if !membershipIsZero(state.Snapshot.Membership) {
+			if !validateMembership(state.Snapshot.Membership, members) {
+				return fmt.Errorf("%w: invalid snapshot voting configuration", ErrInvalidState)
+			}
+			membership = CloneMembership(state.Snapshot.Membership)
+		} else if !membershipsEqual(membership, stableMembership(members, nil)) {
+			return fmt.Errorf("%w: legacy snapshot membership is incompatible with configured voters", ErrInvalidState)
+		}
 	}
 	if math.MaxUint64-state.Snapshot.LastIncludedIndex < uint64(len(state.Log)) {
 		return fmt.Errorf("%w: log index overflow", ErrInvalidState)
@@ -125,8 +148,16 @@ func (c Config) validate(state PersistentState) error {
 	previousTerm := state.Snapshot.LastIncludedTerm
 	for index, entry := range state.Log {
 		want := state.Snapshot.LastIncludedIndex + uint64(index) + 1
-		if entry.Index != want || entry.Term == 0 || entry.Term > state.HardState.CurrentTerm || entry.Term < previousTerm || entry.Type < EntryNoop || entry.Type > EntryCommand {
+		if entry.Index != want || entry.Term == 0 || entry.Term > state.HardState.CurrentTerm || entry.Term < previousTerm || entry.Type < EntryNoop || entry.Type > EntryConfigFinal {
 			return fmt.Errorf("%w: log entry %d has index=%d term=%d type=%d", ErrInvalidState, index, entry.Index, entry.Term, entry.Type)
+		}
+		if entry.Type == EntryConfigFinal && state.HardState.CommitIndex < entry.Index-1 {
+			return fmt.Errorf("%w: final membership at log entry %d precedes an uncommitted prefix", ErrInvalidState, index)
+		}
+		var transitionOK bool
+		membership, transitionOK = transitionMembership(membership, entry, members)
+		if !transitionOK {
+			return fmt.Errorf("%w: invalid membership transition at log entry %d", ErrInvalidState, index)
 		}
 		previousTerm = entry.Term
 	}
@@ -202,6 +233,8 @@ const (
 	InputProposal
 	InputPersisted
 	InputSnapshot
+	InputBeginMembership
+	InputFinalizeMembership
 )
 
 // Input is one deterministic state-machine stimulus.
@@ -212,6 +245,8 @@ type Input struct {
 	WriteToken    uint64
 	SnapshotIndex uint64
 	SnapshotData  []byte
+	Voters        []NodeID
+	Learners      []NodeID
 }
 
 // EffectKind identifies an ordered action requested by a Node. EffectPersist,
@@ -251,20 +286,24 @@ type Status struct {
 	LastLogIndex        uint64
 	LastLogTerm         uint64
 	Snapshot            Snapshot
+	Membership          Membership
 	Log                 []Entry
 	ElectionVotes       []NodeID
+	ElectionMembership  Membership
 	AwaitingPersistence bool
 	WriteToken          uint64
 }
 
 func cloneEntry(entry Entry) Entry {
 	entry.Data = slices.Clone(entry.Data)
+	entry.Membership = CloneMembership(entry.Membership)
 	return entry
 }
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
 	snapshot.Members = slices.Clone(snapshot.Members)
 	snapshot.Data = slices.Clone(snapshot.Data)
+	snapshot.Membership = CloneMembership(snapshot.Membership)
 	return snapshot
 }
 

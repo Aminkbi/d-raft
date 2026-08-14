@@ -38,11 +38,18 @@ rejected.
 
 ## Artifact and checker boundary
 
-Run v2 adds the scheduled `snapshot` action and uses the coherent reference-v2,
-message-codec-v2, checker-v2, and observation-v2 tuple. Snapshot members, bytes,
-protocol state, durable state, and installed application state are deep-cloned
-and affect the final observation digest. Published run v1 remains a separate,
-snapshot-free compatibility surface.
+Run v2 introduced the scheduled `snapshot` action and its coherent v2 tuple.
+Current run v3 additionally records the exact stable or joint voter/learner
+role sets at the snapshot boundary. Snapshot members, membership roles, bytes,
+protocol state, durable state, and installed
+application state are deep-cloned and affect the final observation digest.
+Published run v1 remains a separate, snapshot-free compatibility surface;
+published v2 remains snapshot-aware but has static all-voter membership.
+
+Recovery and remote installation restore the snapshot membership before
+validating and replaying any retained suffix. A legacy snapshot with zero
+`Membership` is accepted only with the legacy all-voter initial configuration;
+explicit-role configurations require a membership-bearing snapshot.
 
 The independent checker detects different term, membership, or bytes for two
 snapshots at the same index. It also checks all still-visible suffix history.
@@ -54,8 +61,10 @@ cross-boundary and cross-adapter checks.
 
 ## Current limitations
 
-- Membership is static; joint consensus and learners are the next protocol
-  milestone.
+- Membership state is included atomically, but the provisioned node universe is
+  fixed for a run; snapshots do not create or destroy processes dynamically.
+- Membership finalization remains an explicit caller action; snapshots do not
+  advance a joint configuration automatically.
 - Snapshots are whole and atomic. There is no chunked transfer, resume, torn
   write, corruption, or filesystem model.
 - The direct in-process Go API trusts snapshot byte slices supplied by the

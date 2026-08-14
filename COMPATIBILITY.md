@@ -62,6 +62,11 @@ The current value is `d-raft.trace/v1`. Within v1:
   and
 - packet messages use their ordinary Go JSON representation.
 
+The trace-v1 guarantee covers the trace envelope and its known fields. Embedded
+protocol payload shape is adapter data; when a trace accompanies a run artifact,
+that payload is versioned by the artifact's message-codec identifier. Adding a
+protocol field does not silently redefine an older message codec.
+
 Consumers must ignore unknown fields and may reject unknown event kinds when
 strict validation is required. Renaming or removing a field, changing a field
 type or unit, or changing an existing event's meaning requires a new schema
@@ -74,9 +79,9 @@ flow.
 ## Semantic decision and run artifacts
 
 Semantic choices use `d-raft.decisions/v1`; current self-describing executions
-use `d-raft.run/v2`. Published `d-raft.run/v1` artifacts remain strictly
-decodable and inspectable. These schemas are independent from the observational
-trace.
+use `d-raft.run/v3`. Published `d-raft.run/v1` and `d-raft.run/v2` artifacts
+remain strictly decodable and inspectable. These schemas are independent from
+the observational trace.
 A v1 decision entry records the full choice, SHA-256 identities of its legal
 domain and semantic context, and the selected alternative. Exact replay stops
 at the first identity, kind, domain, context, or selection mismatch and also
@@ -85,9 +90,10 @@ requires the tape to be fully consumed.
 A run artifact additionally fixes the scenario identifier and version,
 external action order and virtual times, adapter identity, cluster
 configuration, seeds, codec, decision/checker/observation schemas, toolchain and source revision,
-outcome, canonical observation digest, and invariant witnesses. The strict v1
-decoder rejects unknown fields. Additive schema changes therefore require a
-new reader mode or schema version rather than being silently ignored.
+outcome, canonical observation digest, and invariant witnesses. Every run
+schema is decoded strictly and rejects fields outside that version. Additive
+schema changes therefore require a new reader mode or schema version rather
+than being silently ignored.
 
 Cross-version replay is an evaluated capability, not a blanket guarantee. A
 successful replay means the target adapter consumed the semantic tape and
@@ -102,10 +108,16 @@ decoding rather than `float64`.
 The built-in reference compatibility tuple is atomic:
 
 - run v1: `d-raft/reference@1`, message codec v1, checker v1, observation v1;
-- run v2: `d-raft/reference@2`, message codec v2, checker v2, observation v2.
+- run v2: `d-raft/reference@2`, message codec v2, checker v2, observation v2;
+- run v3: `d-raft/reference@3`, message codec v3, checker v3, observation v3.
 
-The current CLI executes and minimizes only the v2 reference adapter. It can
-decode and inspect a coherent v1 artifact, but rejects replay rather than
-pretending that snapshot-aware semantics reproduced a v1 observation digest.
-Run v2 adds the scheduled `snapshot` action and snapshot-bearing protocol,
-durable, application-store, checker, and observation state.
+The current CLI executes and minimizes only the v3 reference adapter. It can
+decode and inspect coherent v1 and v2 artifacts, but rejects their replay
+rather than pretending newer membership-aware semantics reproduced an older
+observation digest. Run v2 added scheduled snapshots and snapshot-bearing
+protocol, durable, application-store, checker, and observation state. Run v3
+adds initial voter/learner roles, joint and final membership entries, scheduled
+membership actions, membership-aware snapshots and election-certificate
+evidence, the membership-transition witness, and membership-bearing
+observations. V2 remains snapshot-aware with static all-voter membership. Older
+tuples never acquire those newer meanings.

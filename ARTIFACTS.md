@@ -1,6 +1,7 @@
 # Run artifacts
 
-`d-raft.run/v2` is the portable unit produced by the research CLI. It bundles
+`d-raft.run/v3` is the versioned replay artifact produced by the research CLI
+and the candidate portability unit for adapter evaluation. It bundles
 the inputs required to reconstruct a run with the evidence required to verify
 its result.
 
@@ -10,7 +11,8 @@ Each artifact records:
 
 - scenario ID, version, virtual duration, and ordered external actions;
 - adapter ID and version;
-- canonical membership, timing, network, storage, and stop policy;
+- a canonical pre-provisioned node universe, initial voter/learner roles,
+  timing, network, storage, and stop policy;
 - semantic and infrastructure seeds;
 - source revision and dirty state, Go version, decision/checker/observation
   schemas, and message codec;
@@ -24,11 +26,20 @@ The format intentionally does not embed the much larger observational JSONL
 trace. A trace explains detailed event order; the semantic tape drives replay;
 the observation digest and witnesses verify the result.
 
+`members` is the fixed provisioned universe. `voters` and `learners` assign its
+initial roles; when both role arrays are absent, all provisioned members are
+voters.
+
 ## Scenario actions
 
-The v2 schema supports `propose`, `snapshot`, `crash`, `restart`,
-`crash_after_next_persist`, `partition`, and `heal`. The persistence-boundary
-action arms a crash after the next durable write completes but before its
+The v3 schema supports `propose`, `snapshot`, `begin_membership`,
+`finalize_membership`, `crash`, `restart`, `crash_after_next_persist`,
+`partition`, and `heal`. `begin_membership` carries canonical target voter and
+learner sets; `finalize_membership` requests the final stable-configuration
+entry, whose commitment happens later through normal replication.
+Either action may target a named node, or use the unique current leader when
+the node is omitted. The persistence-boundary action arms a crash after the
+next durable write completes but before its
 acknowledgement releases dependent effects. Actions are sorted by nondecreasing
 virtual time. Actions at the same time run
 in their listed order, after events armed during initial cluster construction.
@@ -37,15 +48,17 @@ action executes, so a queued persistence acknowledgement cannot move the
 checkpoint boundary underneath already-captured bytes. Invalid node
 references, duplicate partition membership, unrelated action
 fields, out-of-range times, and unknown action kinds are rejected before a run.
+Finalization is not an automatic wait or retry: scheduling it before the joint
+entry and every preceding entry are committed produces an error outcome.
 
 ## Validation and replay
 
-Artifact encoding and decoding are strict and bounded to 64 MiB. The v2 encoder
+Artifact encoding and decoding are strict and bounded to 64 MiB. The v3 encoder
 preflights aggregate variable-size content and per-choice option/context limits,
 then streams bounded components into an exact-size capped buffer before
 publishing any caller-visible bytes. JSON escaping and base64 expansion cannot
 bypass the output cap. The schema
-also caps a run at 31 members, 10,000 actions, 100,000 decisions, 1 MiB per
+also caps a run at 31 provisioned members, 10,000 actions, 100,000 decisions, 1 MiB per
 action payload, 1,024 violations, 1 MiB per witness, 4 KiB of outcome error
 text, 1,000,000 simulator events, and 24 hours of virtual time. Every scenario
 carries a nonzero maximum event count. Exhausting it
@@ -77,7 +90,7 @@ authenticity; sign release artifacts and checksums separately.
 
 ## Current portability boundary
 
-The current built-in adapter is `d-raft/reference@2`. Cross-implementation replay
+The current built-in adapter is `d-raft/reference@3`. Cross-implementation replay
 will require an adapter to map its batching, timer, storage, and membership
 semantics onto the common choice model. A single-threaded artifact cannot
 represent production data races, and the current atomic store does not model
@@ -89,22 +102,29 @@ Raft message codec use JSON integer numbers; consumers must parse those fields
 with 64-bit or arbitrary-precision integers and must never route them through
 binary floating point.
 
-The final-state digest is defined by `d-raft.observation/v2`: virtual time;
+The final-state digest is defined by `d-raft.observation/v3`: virtual time;
 canonical member order; process availability; the full `raft.Status`; durable
 and applied store state, including installed snapshots; and ordered violation
-witnesses. Changing those fields
+witnesses. Status, log entries, and snapshots include membership role sets.
+Changing those fields
 or their JSON representation requires a new observation schema identifier.
 
-## Legacy v1 boundary
+## Legacy v1 and v2 boundaries
 
 A coherent published v1 artifact uses `d-raft/reference@1`, message codec v1,
 checker v1, and observation v1. The library still strictly decodes, validates,
 and re-encodes that tuple. `draft inspect` accepts it; current `draft replay`
-and `draft minimize` reject it explicitly because the execution adapter is v2.
+and `draft minimize` reject it explicitly because the execution adapter is v3.
 Snapshot actions and snapshot-conflict witnesses are invalid in v1. This avoids
 silently redefining any published v1 identifier.
 
-V2's new per-choice and aggregate producer limits are not retroactively applied
-to v1. Legacy input is still bounded by the 64 MiB decoder and exact encoder
-output caps, preserving historically valid v1 tapes with larger individual
-contexts.
+A coherent published v2 artifact uses `d-raft/reference@2`, message codec v2,
+checker v2, and observation v2. It supports snapshot actions and snapshot
+witnesses, but has no voter/learner configuration fields or membership actions.
+The library continues to decode, validate, re-encode, and inspect that exact
+tuple; current replay and minimization reject it explicitly.
+
+The per-choice and aggregate producer limits introduced by v2 continue to
+apply to v2 and v3, but are not retroactively applied to v1. Legacy input is
+still bounded by the 64 MiB decoder and exact encoder output caps, preserving
+historically valid v1 tapes with larger individual contexts.

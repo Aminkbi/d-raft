@@ -21,21 +21,25 @@ a different message or timer.
 
 ## Output and metrics
 
-The output is a fresh, exact `d-raft.run/v2` artifact containing the full tape
+The output is a fresh, exact `d-raft.run/v3` artifact containing the full tape
 actually consumed by the minimized execution. The command also reports actions
-removed, guidance entries proven unnecessary, selections simplified, reruns,
-and whether the minimization budget was exhausted.
+removed, guidance entries removed while preserving the target under the
+configured fallback seed, selections simplified, reruns, and whether the
+minimization budget was exhausted.
 
-“Guidance removed” is a causal-core metric, not the number of entries omitted
-from the final exact tape: deterministic replay still records every choice it
-consumed. A future compact counterexample wrapper may encode sparse guidance
-plus its fallback policy, but it will not change the already published run-v1
-meaning.
+“Guidance removed” is a sparse-guidance metric under one fallback policy, not a
+proof of causal irrelevance or the number of entries omitted from the final
+exact tape: deterministic replay still records every choice it consumed. A
+future compact counterexample wrapper may encode sparse guidance plus its
+fallback policy, but it will not change the already published run-v1 meaning.
 
 ## Limitations
 
 Reduction is greedy and fingerprint-specific; it does not prove a globally
 minimal counterexample. Non-monotonic failures can defeat delta debugging and
 numeric simplification. Current action reduction does not remap membership or
-produce asymmetric partition matrices. Comparative evaluation will measure it
-against flat ddmin and a DEMi-inspired baseline.
+produce asymmetric partition matrices. It may remove whole membership actions,
+but does not shrink or remap the initial universe/roles, target voter/learner
+sets, or node IDs, and it does not rewrite begin/finalize dependency pairs.
+Comparative evaluation will measure it against flat ddmin and a DEMi-inspired
+baseline.

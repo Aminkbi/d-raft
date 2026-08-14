@@ -10,7 +10,7 @@ d-raft is a research platform for turning distributed-systems failures into
 small, independently checkable execution artifacts. It combines a pure Raft
 reference state machine with virtual time, a faultable network, explicit
 persistence acknowledgements, crash/restart simulation, semantic decision
-recording, and independent safety checks.
+recording, and package-separated safety checks with structured witnesses.
 
 The project is created and maintained by
 [Mohammadamin Khanbabaei (`aminkbi`)](https://github.com/aminkbi).
@@ -21,8 +21,9 @@ The project is created and maintained by
 > the research CLI are also usable. Bounded prefix exploration and
 > fingerprint-preserving semantic minimization are implemented. Durable
 > snapshots, safe log compaction, and snapshot-bearing run artifacts are also
-> implemented. Joint consensus, production adapters, and comparative
-> evaluation remain active research work.
+> implemented. Joint-consensus membership changes and learners are implemented,
+> including durable recovery and snapshot-aware configuration state. Production
+> adapters and comparative evaluation remain active research work.
 
 ## Why d-raft?
 
@@ -46,13 +47,13 @@ plan.
 | Package | Role |
 | --- | --- |
 | `sim` | Protocol-neutral virtual-time scheduler, stable RNG streams, typed network, partitions, and observational JSONL traces |
-| `raft` | Pure deterministic Raft reference state machine with elections, replication, current-term commit, snapshots, compaction, and leader no-op entries |
-| `raftsim` | Durable storage, timers, network delivery, partitions, crash/restart, snapshot installation, process incarnations, and persistence barriers |
-| `check` | Independent election, voting, term, log, commit, apply, and equal-boundary snapshot witnesses with stable fingerprints |
+| `raft` | Pure deterministic Raft reference state machine with elections, replication, current-term commit, snapshots, compaction, joint consensus, learners, and leader no-op entries |
+| `raftsim` | Durable storage, timers, network delivery, partitions, crash/restart, snapshot installation, membership actions, process incarnations, and persistence barriers |
+| `check` | Package-separated election, voting, term, log, commit, apply, snapshot, and membership-transition witnesses with stable fingerprints |
 | `decision` | Versioned semantic choices, seeded selection, recording, exact tape replay, and domain-drift detection |
 | `trace` | Bounded, line-aware, payload-lossless decoder for known `d-raft.trace/v1` fields |
-| `artifact` | Strict, self-describing `d-raft.run/v2` artifacts with scenarios, configuration, environment, tape, outcome, digest, and witnesses; legacy v1 decoding remains available |
-| `experiment` | Clean-run execution of versioned scenarios and external crash, restart, partition, heal, and proposal actions |
+| `artifact` | Strict, self-describing `d-raft.run/v3` artifacts with scenarios, voter/learner roles, configuration actions, environment, tape, outcome, digest, and witnesses; legacy v1/v2 decoding remains available |
+| `experiment` | Clean-run execution of versioned scenarios and proposal, snapshot, begin/finalize membership, crash/restart, partition, and heal actions |
 | `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
 | `explore` | Clean-rerun bounded DFS over semantic choice prefixes with deterministic suffix completion |
 | `minimize` | Scenario ddmin, sparse semantic guidance reduction, and domain-aware selection shrinking |
@@ -69,7 +70,7 @@ flowchart LR
     Harness[Durable Raft harness]
     Model[Pure Raft model]
     Runtime[Virtual time + network]
-    Checker[Independent checker]
+    Checker[Package-separated checker]
     Artifact[Decision tape + observations]
 
     Scenario --> Harness
@@ -149,7 +150,7 @@ if err := replay.Finish(); err != nil {
 `TapeDecider` stops at the first choice ID, kind, domain, or selection mismatch.
 This makes replay drift explicit instead of silently producing a different run.
 Exact execution also requires the same scenario version, external actions, and
-run horizon; `d-raft.run/v2` bundles those inputs with the tape.
+run horizon; `d-raft.run/v3` bundles those inputs with the tape.
 
 ## Command-line workflow
 
@@ -171,12 +172,16 @@ observation digest. Artifact writes use a temporary file and atomic no-clobber
 publication, so an encoding or filesystem failure does not leave a plausible
 partial result. Artifacts remain private (`0600`) by default.
 
-The current built-in scenario is a steady fixed-membership cluster. The schema
-also represents scheduled proposals, snapshots, partitions, healing, crashes,
-and restarts, including the crash-after-persistence-before-acknowledgement
-boundary; named fault scenarios, state caching, and production adapters are
-later milestones. See [ARTIFACTS.md](ARTIFACTS.md), [SNAPSHOTS.md](SNAPSHOTS.md),
-[EXPLORATION.md](EXPLORATION.md), and [MINIMIZATION.md](MINIMIZATION.md).
+`draft run` and `draft explore` currently generate a steady all-voter scenario.
+The v3 schema and Go APIs can also execute scheduled proposals, snapshots,
+joint membership transitions, partitions, healing, crashes, and restarts,
+including the crash-after-persistence-before-acknowledgement boundary. Role
+changes are limited to a pre-provisioned `Members` universe; they do not perform
+dynamic discovery or process creation. Named CLI fault suites, state caching,
+and production adapters are later milestones. See
+[ARTIFACTS.md](ARTIFACTS.md), [MEMBERSHIP.md](MEMBERSHIP.md),
+[SNAPSHOTS.md](SNAPSHOTS.md), [EXPLORATION.md](EXPLORATION.md), and
+[MINIMIZATION.md](MINIMIZATION.md).
 
 ## Observational traces
 
@@ -215,9 +220,9 @@ changes, a crash-boundary test where persistence matters. See
 d-raft builds on ideas demonstrated by etcd/raft's deterministic core and TLA+
 trace validation, FoundationDB simulation, DEMi, SAMC, MadSim/MadRaft, Oddity,
 Coyote, Turmoil, VOPR, and commercial deterministic-testing systems such as
-Antithesis. The intended contribution is a portable semantic counterexample
-format and reduction/evaluation workflow, not another claim that seeded
-simulation itself is new.
+Antithesis. The research target is a portable semantic counterexample format
+and reduction/evaluation workflow, not another claim that seeded simulation
+itself is new.
 
 ## Citation and license
 

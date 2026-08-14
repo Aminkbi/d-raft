@@ -265,8 +265,13 @@ func inspectCommand(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	fmt.Fprintf(stdout, "schema: %s\nscenario: %s@%s\nadapter: %s@%s\nmembers: %s\nduration: %s\nmax steps: %d\nactions: %d\ninfrastructure seed: %d\ndecision seed: %d\nnetwork: %s..%s loss=%g\nelection: %s..%s\nheartbeat: %s\nstorage: %s\nsource: %s modified=%t\ngo: %s\ndecision schema: %s\nchecker schema: %s\nobservation schema: %s\nmessage codec: %s\ndecisions: %d\nstatus: %s\nsteps: %d\nend: %s\nobservation: %s\n", safeText(run.Schema, 128), safeText(run.Scenario.ID, 128), safeText(run.Scenario.Version, 64), safeText(run.Adapter.ID, 128), safeText(run.Adapter.Version, 64), joinMembers(run.Configuration.Members), time.Duration(run.Scenario.DurationNS), run.Scenario.MaxSteps, len(run.Scenario.Actions), run.Configuration.InfrastructureSeed, run.Reproducibility.DecisionSeed, time.Duration(run.Configuration.NetworkMinLatencyNS), time.Duration(run.Configuration.NetworkMaxLatencyNS), run.Configuration.NetworkLossProbability, time.Duration(run.Configuration.ElectionTimeoutMinNS), time.Duration(run.Configuration.ElectionTimeoutMaxNS), time.Duration(run.Configuration.HeartbeatIntervalNS), time.Duration(run.Configuration.StorageLatencyNS), safeText(run.Reproducibility.GitRevision, 128), run.Reproducibility.GitModified, safeText(run.Reproducibility.GoVersion, 64), safeText(run.Reproducibility.DecisionSchema, 128), safeText(run.Reproducibility.CheckerSchema, 128), safeText(run.Reproducibility.ObservationSchema, 128), safeText(run.Reproducibility.MessageCodec, 128), len(run.Decisions.Entries), run.Outcome.Status, run.Outcome.Steps, time.Duration(run.Outcome.EndNS), run.Outcome.ObservationDigest)
+	voters := run.Configuration.Voters
+	if len(voters) == 0 {
+		voters = run.Configuration.Members
+	}
+	fmt.Fprintf(stdout, "voters: %s\nlearners: %s\n", joinMembers(voters), joinMembers(run.Configuration.Learners))
 	for index, action := range run.Scenario.Actions {
-		fmt.Fprintf(stdout, "action %d: at=%s kind=%s node=%s data_bytes=%d groups=%s\n", index, time.Duration(action.AtNS), safeText(string(action.Kind), 64), safeText(string(action.Node), 64), len(action.Data), formatGroups(action.Groups))
+		fmt.Fprintf(stdout, "action %d: at=%s kind=%s node=%s data_bytes=%d groups=%s voters=%s learners=%s\n", index, time.Duration(action.AtNS), safeText(string(action.Kind), 64), safeText(string(action.Node), 64), len(action.Data), formatGroups(action.Groups), joinMembers(action.Voters), joinMembers(action.Learners))
 	}
 	for _, violation := range run.Outcome.Violations {
 		fmt.Fprintf(stdout, "violation: %s [%s] nodes=%s\n", safeText(violation.ID, 128), violation.Fingerprint, joinMembers(violation.Nodes))

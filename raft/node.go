@@ -9,20 +9,23 @@ import (
 // Node is a deterministic, pure Raft state machine. It is not safe for
 // concurrent use. All I/O requested by a transition is returned as Effects.
 type Node struct {
-	id      NodeID
-	members []NodeID
-	role    Role
-	leader  NodeID
-	state   PersistentState
-	applied uint64
+	id                NodeID
+	members           []NodeID
+	initialMembership Membership
+	membership        Membership
+	role              Role
+	leader            NodeID
+	state             PersistentState
+	applied           uint64
 
-	votes          map[NodeID]struct{}
-	electionVotes  []NodeID
-	nextIndex      map[NodeID]uint64
-	matchIndex     map[NodeID]uint64
-	appendSequence map[NodeID]uint64
-	nextWriteToken uint64
-	pending        *pendingWrite
+	votes              map[NodeID]struct{}
+	electionVotes      []NodeID
+	electionMembership Membership
+	nextIndex          map[NodeID]uint64
+	matchIndex         map[NodeID]uint64
+	appendSequence     map[NodeID]uint64
+	nextWriteToken     uint64
+	pending            *pendingWrite
 }
 
 type pendingWrite struct {
@@ -38,14 +41,18 @@ func New(config Config, state PersistentState) (*Node, error) {
 	}
 	members := slices.Clone(config.Members)
 	slices.Sort(members)
-	return &Node{
-		id:             config.ID,
-		members:        members,
-		role:           Follower,
-		state:          state,
-		applied:        config.AppliedIndex,
-		nextWriteToken: 1,
-	}, nil
+	initial, _ := initialMembership(config, members)
+	node := &Node{
+		id:                config.ID,
+		members:           members,
+		initialMembership: initial,
+		role:              Follower,
+		state:             state,
+		applied:           config.AppliedIndex,
+		nextWriteToken:    1,
+	}
+	node.refreshMembership()
+	return node, nil
 }
 
 // Start returns the effects needed after construction or restart. Committed
@@ -58,7 +65,9 @@ func (n *Node) Start() []Effect {
 		effects = append(effects, Effect{Kind: EffectInstallSnapshot, Snapshot: cloneSnapshot(n.state.Snapshot)})
 	}
 	effects = append(effects, n.applyCommitted()...)
-	effects = append(effects, Effect{Kind: EffectResetElectionTimer})
+	if n.membership.isVoter(n.id) {
+		effects = append(effects, Effect{Kind: EffectResetElectionTimer})
+	}
 	return effects
 }
 
@@ -77,6 +86,9 @@ func (n *Node) Step(input Input) ([]Effect, error) {
 
 	switch input.Kind {
 	case InputElectionTimeout:
+		if !n.membership.isVoter(n.id) {
+			return nil, nil
+		}
 		if n.state.HardState.CurrentTerm == math.MaxUint64 {
 			err = ErrTermExhausted
 		} else {
@@ -92,6 +104,12 @@ func (n *Node) Step(input Input) ([]Effect, error) {
 	case InputProposal:
 		if n.role != Leader {
 			return nil, ErrNotLeader
+		}
+		if !n.membership.isVoter(n.id) {
+			return nil, ErrNotVoter
+		}
+		if n.hasUncommittedConfiguration() {
+			return nil, ErrMembershipInProgress
 		}
 		if n.lastIndex() == math.MaxUint64 {
 			return nil, ErrIndexExhausted
@@ -115,9 +133,14 @@ func (n *Node) Step(input Input) ([]Effect, error) {
 		if index < math.MaxUint64 {
 			suffix = n.entriesFrom(index + 1)
 		}
-		n.state.Snapshot = Snapshot{LastIncludedIndex: index, LastIncludedTerm: term, Members: slices.Clone(n.members), Data: slices.Clone(input.SnapshotData)}
+		n.state.Snapshot = Snapshot{LastIncludedIndex: index, LastIncludedTerm: term, Members: slices.Clone(n.members), Data: slices.Clone(input.SnapshotData), Membership: CloneMembership(n.membershipAt(index))}
 		n.state.Log = suffix
+		n.refreshMembership()
 		dirty = true
+	case InputBeginMembership:
+		dirty, effects, err = n.beginMembership(input.Voters, input.Learners)
+	case InputFinalizeMembership:
+		dirty, effects, err = n.finalizeMembership()
 	default:
 		err = fmt.Errorf("%w: kind %d", ErrInvalidInput, input.Kind)
 	}
@@ -146,8 +169,10 @@ func (n *Node) Status() Status {
 		LastLogIndex:        n.lastIndex(),
 		LastLogTerm:         n.lastTerm(),
 		Snapshot:            cloneSnapshot(n.state.Snapshot),
+		Membership:          CloneMembership(n.membership),
 		Log:                 cloneEntries(n.state.Log),
 		ElectionVotes:       slices.Clone(n.electionVotes),
+		ElectionMembership:  CloneMembership(n.electionMembership),
 		AwaitingPersistence: n.pending != nil,
 	}
 	if n.pending != nil {
@@ -165,8 +190,72 @@ func (n *Node) acknowledgePersistence(token uint64) ([]Effect, error) {
 	return effects, nil
 }
 
+func (n *Node) beginMembership(voters, learners []NodeID) (bool, []Effect, error) {
+	if n.role != Leader {
+		return false, nil, ErrNotLeader
+	}
+	if !n.membership.isVoter(n.id) {
+		return false, nil, ErrNotVoter
+	}
+	if n.membership.Joint() || n.hasUncommittedConfiguration() {
+		return false, nil, ErrMembershipInProgress
+	}
+	if n.lastIndex() == math.MaxUint64 {
+		return false, nil, ErrIndexExhausted
+	}
+	target := stableMembership(voters, learners)
+	if !validateMembership(target, n.members) || membershipsEqual(target, n.membership) {
+		return false, nil, fmt.Errorf("%w: invalid or unchanged target membership", ErrInvalidInput)
+	}
+	jointLearners := make([]NodeID, 0, len(target.Learners))
+	for _, learner := range target.Learners {
+		if !slices.Contains(n.membership.Voters, learner) {
+			jointLearners = append(jointLearners, learner)
+		}
+	}
+	joint := Membership{
+		Voters:         slices.Clone(target.Voters),
+		VotersOutgoing: slices.Clone(n.membership.Voters),
+		Learners:       jointLearners,
+		LearnersNext:   slices.Clone(target.Learners),
+	}
+	return n.appendMembershipEntry(EntryConfigJoint, joint)
+}
+
+func (n *Node) finalizeMembership() (bool, []Effect, error) {
+	if n.role != Leader {
+		return false, nil, ErrNotLeader
+	}
+	if !n.membership.Joint() || n.hasUncommittedConfiguration() || n.state.HardState.CommitIndex != n.lastIndex() {
+		return false, nil, ErrMembershipInProgress
+	}
+	if n.lastIndex() == math.MaxUint64 {
+		return false, nil, ErrIndexExhausted
+	}
+	final := stableMembership(n.membership.Voters, n.membership.LearnersNext)
+	return n.appendMembershipEntry(EntryConfigFinal, final)
+}
+
+func (n *Node) appendMembershipEntry(entryType EntryType, membership Membership) (bool, []Effect, error) {
+	entry := Entry{Index: n.lastIndex() + 1, Term: n.state.HardState.CurrentTerm, Type: entryType, Membership: CloneMembership(membership)}
+	if _, ok := transitionMembership(n.membership, entry, n.members); !ok {
+		return false, nil, fmt.Errorf("%w: invalid membership transition", ErrInvalidInput)
+	}
+	n.state.Log = append(n.state.Log, entry)
+	n.refreshMembership()
+	n.matchIndex[n.id] = entry.Index
+	effects := n.advanceCommit()
+	if n.role == Leader {
+		effects = append(effects, n.broadcastAppend()...)
+	}
+	return true, effects, nil
+}
+
 func (n *Node) startElection() (bool, []Effect, error) {
-	if len(n.members) == 1 && n.lastIndex() == math.MaxUint64 {
+	if !n.membership.isVoter(n.id) {
+		return false, nil, ErrNotVoter
+	}
+	if n.membership.quorum(func(id NodeID) bool { return id == n.id }) && n.lastIndex() == math.MaxUint64 {
 		return false, nil, ErrIndexExhausted
 	}
 	n.role = Candidate
@@ -179,7 +268,7 @@ func (n *Node) startElection() (bool, []Effect, error) {
 	n.matchIndex = nil
 	n.appendSequence = nil
 	effects := []Effect{{Kind: EffectResetElectionTimer}}
-	if n.hasQuorum(1) {
+	if n.membership.quorum(func(id NodeID) bool { _, ok := n.votes[id]; return ok }) {
 		leaderEffects, err := n.becomeLeader()
 		if err != nil {
 			return false, nil, err
@@ -187,7 +276,7 @@ func (n *Node) startElection() (bool, []Effect, error) {
 		effects = append(effects, leaderEffects...)
 		return true, effects, nil
 	}
-	for _, member := range n.members {
+	for _, member := range voterUnion(n.membership) {
 		if member == n.id {
 			continue
 		}
@@ -245,6 +334,7 @@ func (n *Node) handleRequestVote(message Message) (bool, []Effect) {
 	granted := false
 	dirty := false
 	if message.Term == n.state.HardState.CurrentTerm &&
+		n.membership.isVoter(n.id) && n.membership.isVoter(message.From) &&
 		(n.state.HardState.VotedFor == "" || n.state.HardState.VotedFor == message.From) &&
 		n.candidateLogIsUpToDate(message.LastLogIndex, message.LastLogTerm) {
 		if n.state.HardState.VotedFor != message.From {
@@ -274,7 +364,7 @@ func (n *Node) handleRequestVoteResponse(message Message) (bool, []Effect, error
 		return false, nil, nil
 	}
 	n.votes[message.From] = struct{}{}
-	if !n.hasQuorum(len(n.votes)) {
+	if !n.membership.quorum(func(id NodeID) bool { _, ok := n.votes[id]; return ok }) {
 		return false, nil, nil
 	}
 	effects, err := n.becomeLeader()
@@ -288,6 +378,7 @@ func (n *Node) becomeLeader() ([]Effect, error) {
 	n.role = Leader
 	n.leader = n.id
 	n.electionVotes = make([]NodeID, 0, len(n.votes))
+	n.electionMembership = CloneMembership(n.membership)
 	for _, member := range n.members {
 		if _, voted := n.votes[member]; voted {
 			n.electionVotes = append(n.electionVotes, member)
@@ -335,9 +426,16 @@ func (n *Node) handleAppendEntries(message Message) (bool, []Effect) {
 		return false, effects
 	}
 	previousTerm := message.PrevLogTerm
+	membership := n.membershipAt(message.PrevLogIndex)
 	for offset, incoming := range message.Entries {
 		index := message.PrevLogIndex + uint64(offset) + 1
-		if incoming.Index != index || incoming.Term == 0 || incoming.Term > message.Term || incoming.Term < previousTerm || incoming.Type < EntryNoop || incoming.Type > EntryCommand {
+		if incoming.Index != index || incoming.Term == 0 || incoming.Term > message.Term || incoming.Term < previousTerm || incoming.Type < EntryNoop || incoming.Type > EntryConfigFinal {
+			effects = append(effects, Effect{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, index)})
+			return false, effects
+		}
+		var transitionOK bool
+		membership, transitionOK = transitionMembership(membership, incoming, n.members)
+		if !transitionOK {
 			effects = append(effects, Effect{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, index)})
 			return false, effects
 		}
@@ -362,6 +460,9 @@ func (n *Node) handleAppendEntries(message Message) (bool, []Effect) {
 			dirty = true
 		}
 	}
+	if dirty {
+		n.refreshMembership()
+	}
 	if message.LeaderCommit > n.state.HardState.CommitIndex {
 		n.state.HardState.CommitIndex = min(message.LeaderCommit, n.lastIndex())
 		dirty = true
@@ -381,7 +482,12 @@ func (n *Node) handleInstallSnapshot(message Message) (bool, []Effect) {
 	}
 	effects := []Effect{{Kind: EffectResetElectionTimer}}
 	snapshot := message.Snapshot
-	if snapshot.LastIncludedIndex == 0 || snapshot.LastIncludedTerm == 0 || snapshot.LastIncludedTerm > message.Term || !slices.Equal(snapshot.Members, n.members) {
+	snapshotMembership := snapshot.Membership
+	if membershipIsZero(snapshotMembership) {
+		snapshotMembership = stableMembership(snapshot.Members, nil)
+	}
+	legacyMembershipMismatch := membershipIsZero(snapshot.Membership) && !membershipsEqual(n.initialMembership, stableMembership(n.members, nil))
+	if snapshot.LastIncludedIndex == 0 || snapshot.LastIncludedTerm == 0 || snapshot.LastIncludedTerm > message.Term || !slices.Equal(snapshot.Members, n.members) || !validateMembership(snapshotMembership, n.members) || legacyMembershipMismatch {
 		effects = append(effects, Effect{Kind: EffectSend, Message: n.snapshotResponse(message.From, message.Sequence, false, n.state.Snapshot.LastIncludedIndex)})
 		return false, effects
 	}
@@ -395,10 +501,20 @@ func (n *Node) handleInstallSnapshot(message Message) (bool, []Effect) {
 			suffix = n.entriesFrom(snapshot.LastIncludedIndex + 1)
 		}
 	}
+	candidateMembership := CloneMembership(snapshotMembership)
+	for _, entry := range suffix {
+		var transitionOK bool
+		candidateMembership, transitionOK = transitionMembership(candidateMembership, entry, n.members)
+		if !transitionOK {
+			effects = append(effects, Effect{Kind: EffectSend, Message: n.snapshotResponse(message.From, message.Sequence, false, n.state.Snapshot.LastIncludedIndex)})
+			return false, effects
+		}
+	}
 	n.state.Snapshot = cloneSnapshot(snapshot)
 	n.state.Log = suffix
 	n.state.HardState.CommitIndex = snapshot.LastIncludedIndex
 	n.applied = snapshot.LastIncludedIndex
+	n.refreshMembership()
 	effects = append(effects,
 		Effect{Kind: EffectInstallSnapshot, Snapshot: cloneSnapshot(snapshot)},
 		Effect{Kind: EffectSend, Message: n.snapshotResponse(message.From, message.Sequence, true, snapshot.LastIncludedIndex)},
@@ -416,6 +532,9 @@ func (n *Node) handleInstallSnapshotResponse(message Message) (bool, []Effect) {
 	}
 	effects := n.advanceCommit()
 	dirty := len(effects) > 0
+	if n.role != Leader {
+		return dirty, effects
+	}
 	if n.matchIndex[message.From] < n.lastIndex() {
 		effects = append(effects, Effect{Kind: EffectSend, Message: n.appendFor(message.From)})
 	}
@@ -446,6 +565,9 @@ func (n *Node) handleAppendEntriesResponse(message Message) (bool, []Effect) {
 	}
 	effects := n.advanceCommit()
 	dirty := len(effects) > 0
+	if n.role != Leader {
+		return dirty, effects
+	}
 	if n.matchIndex[message.From] < n.lastIndex() {
 		effects = append(effects, Effect{Kind: EffectSend, Message: n.appendFor(message.From)})
 	}
@@ -458,15 +580,14 @@ func (n *Node) advanceCommit() []Effect {
 		if n.termAt(index) != n.state.HardState.CurrentTerm {
 			continue
 		}
-		matched := 0
-		for _, member := range n.members {
-			if n.matchIndex[member] >= index {
-				matched++
-			}
-		}
-		if n.hasQuorum(matched) {
+		membership := n.membershipAt(index)
+		if membership.quorum(func(member NodeID) bool { return n.matchIndex[member] >= index }) {
 			n.state.HardState.CommitIndex = index
-			return n.applyCommitted()
+			effects := n.applyCommitted()
+			if n.role == Leader && !n.membership.isVoter(n.id) {
+				n.becomeFollower(n.state.HardState.CurrentTerm, "")
+			}
+			return effects
 		}
 	}
 	return nil
@@ -556,6 +677,7 @@ func (n *Node) becomeFollower(term uint64, leader NodeID) {
 	n.leader = leader
 	n.votes = nil
 	n.electionVotes = nil
+	n.electionMembership = Membership{}
 	n.nextIndex = nil
 	n.matchIndex = nil
 	n.appendSequence = nil
@@ -622,8 +744,42 @@ func (n *Node) truncateFrom(index uint64) {
 	}
 }
 
-func (n *Node) hasQuorum(count int) bool {
-	return count >= len(n.members)/2+1
+func (n *Node) membershipAt(index uint64) Membership {
+	membership := CloneMembership(n.initialMembership)
+	if n.state.Snapshot.LastIncludedIndex > 0 && index >= n.state.Snapshot.LastIncludedIndex {
+		if membershipIsZero(n.state.Snapshot.Membership) {
+			membership = stableMembership(n.state.Snapshot.Members, nil)
+		} else {
+			membership = CloneMembership(n.state.Snapshot.Membership)
+		}
+	}
+	for _, entry := range n.state.Log {
+		if entry.Index > index {
+			break
+		}
+		if entry.Type != EntryConfigJoint && entry.Type != EntryConfigFinal {
+			continue
+		}
+		next, ok := transitionMembership(membership, entry, n.members)
+		if !ok {
+			panic(fmt.Sprintf("raft: invalid membership transition at index %d", entry.Index))
+		}
+		membership = next
+	}
+	return membership
+}
+
+func (n *Node) refreshMembership() {
+	n.membership = n.membershipAt(n.lastIndex())
+}
+
+func (n *Node) hasUncommittedConfiguration() bool {
+	for _, entry := range n.state.Log {
+		if entry.Index > n.state.HardState.CommitIndex && (entry.Type == EntryConfigJoint || entry.Type == EntryConfigFinal) {
+			return true
+		}
+	}
+	return false
 }
 
 func nextIndexAfter(index uint64) uint64 {

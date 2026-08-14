@@ -25,17 +25,21 @@ import (
 
 const (
 	SchemaV1                  = "d-raft.run/v1"
-	SchemaVersion             = "d-raft.run/v2"
+	SchemaV2                  = "d-raft.run/v2"
+	SchemaVersion             = "d-raft.run/v3"
 	ReferenceAdapterID        = "d-raft/reference"
 	ReferenceAdapterV1        = "1"
 	ReferenceAdapterV2        = "2"
-	ReferenceAdapterCurrent   = ReferenceAdapterV2
+	ReferenceAdapterV3        = "3"
+	ReferenceAdapterCurrent   = ReferenceAdapterV3
 	MessageCodecV1            = "d-raft.raft-message/json-v1"
 	MessageCodecV2            = "d-raft.raft-message/json-v2"
-	MessageCodecCurrent       = MessageCodecV2
+	MessageCodecV3            = "d-raft.raft-message/json-v3"
+	MessageCodecCurrent       = MessageCodecV3
 	ObservationSchemaV1       = "d-raft.observation/v1"
 	ObservationSchemaV2       = "d-raft.observation/v2"
-	ObservationSchemaCurrent  = ObservationSchemaV2
+	ObservationSchemaV3       = "d-raft.observation/v3"
+	ObservationSchemaCurrent  = ObservationSchemaV3
 	DefaultMaxArtifactBytes   = 64 << 20
 	MaxMembers                = 31
 	MaxActions                = 10_000
@@ -90,6 +94,8 @@ const (
 	ActionRestart               ActionKind = "restart"
 	ActionCrashAfterNextPersist ActionKind = "crash_after_next_persist"
 	ActionSnapshot              ActionKind = "snapshot"
+	ActionBeginMembership       ActionKind = "begin_membership"
+	ActionFinalizeMembership    ActionKind = "finalize_membership"
 	ActionPartition             ActionKind = "partition"
 	ActionHeal                  ActionKind = "heal"
 )
@@ -98,11 +104,34 @@ const (
 // Equal-time actions execute in their listed order after events already armed
 // while the cluster was constructed.
 type Action struct {
-	AtNS   int64           `json:"at_ns"`
-	Kind   ActionKind      `json:"kind"`
-	Node   raft.NodeID     `json:"node,omitempty"`
-	Data   []byte          `json:"data,omitempty"`
-	Groups [][]raft.NodeID `json:"groups,omitempty"`
+	AtNS     int64           `json:"at_ns"`
+	Kind     ActionKind      `json:"kind"`
+	Node     raft.NodeID     `json:"node,omitempty"`
+	Data     []byte          `json:"data,omitempty"`
+	Groups   [][]raft.NodeID `json:"groups,omitempty"`
+	Voters   []raft.NodeID   `json:"voters,omitempty"`
+	Learners []raft.NodeID   `json:"learners,omitempty"`
+
+	votersPresent   bool
+	learnersPresent bool
+}
+
+// UnmarshalJSON retains presence of v3-only role fields so legacy schemas
+// reject them even when their value is [] or null.
+func (a *Action) UnmarshalJSON(data []byte) error {
+	type plain Action
+	var decoded plain
+	if err := decodeStrictJSON(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*a = Action(decoded)
+	_, a.votersPresent = fields["voters"]
+	_, a.learnersPresent = fields["learners"]
+	return nil
 }
 
 // Scenario fixes a named action sequence and virtual run horizon.
@@ -123,6 +152,8 @@ type Adapter struct {
 // Configuration is the stable JSON form of raftsim.Config.
 type Configuration struct {
 	Members                []raft.NodeID `json:"members"`
+	Voters                 []raft.NodeID `json:"voters,omitempty"`
+	Learners               []raft.NodeID `json:"learners,omitempty"`
 	InfrastructureSeed     Uint64        `json:"infrastructure_seed"`
 	NetworkMinLatencyNS    int64         `json:"network_min_latency_ns"`
 	NetworkMaxLatencyNS    int64         `json:"network_max_latency_ns"`
@@ -132,14 +163,39 @@ type Configuration struct {
 	HeartbeatIntervalNS    int64         `json:"heartbeat_interval_ns"`
 	StorageLatencyNS       int64         `json:"storage_latency_ns"`
 	StopOnViolation        bool          `json:"stop_on_violation"`
+
+	votersPresent   bool
+	learnersPresent bool
+}
+
+// UnmarshalJSON retains presence of v3-only role fields so legacy schemas
+// reject them even when their value is [] or null.
+func (c *Configuration) UnmarshalJSON(data []byte) error {
+	type plain Configuration
+	var decoded plain
+	if err := decodeStrictJSON(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = Configuration(decoded)
+	_, c.votersPresent = fields["voters"]
+	_, c.learnersPresent = fields["learners"]
+	return nil
 }
 
 // ConfigurationFrom converts a cluster configuration to its stable form.
 func ConfigurationFrom(config raftsim.Config) Configuration {
 	members := slices.Clone(config.Members)
 	slices.Sort(members)
+	voters := slices.Clone(config.Voters)
+	learners := slices.Clone(config.Learners)
+	slices.Sort(voters)
+	slices.Sort(learners)
 	return Configuration{
-		Members: members, InfrastructureSeed: Uint64(config.Seed),
+		Members: members, Voters: voters, Learners: learners, InfrastructureSeed: Uint64(config.Seed),
 		NetworkMinLatencyNS: int64(config.Network.MinLatency), NetworkMaxLatencyNS: int64(config.Network.MaxLatency),
 		NetworkLossProbability: config.Network.LossProbability,
 		ElectionTimeoutMinNS:   int64(config.ElectionTimeoutMin), ElectionTimeoutMaxNS: int64(config.ElectionTimeoutMax),
@@ -151,7 +207,7 @@ func ConfigurationFrom(config raftsim.Config) Configuration {
 // ClusterConfig reconstructs the executable reference-harness configuration.
 func (c Configuration) ClusterConfig(decider decision.Decider, trace sim.TraceSink) raftsim.Config {
 	return raftsim.Config{
-		Members: slices.Clone(c.Members), Seed: uint64(c.InfrastructureSeed),
+		Members: slices.Clone(c.Members), Voters: slices.Clone(c.Voters), Learners: slices.Clone(c.Learners), Seed: uint64(c.InfrastructureSeed),
 		Network:            sim.LinkConfig{MinLatency: time.Duration(c.NetworkMinLatencyNS), MaxLatency: time.Duration(c.NetworkMaxLatencyNS), LossProbability: c.NetworkLossProbability},
 		ElectionTimeoutMin: time.Duration(c.ElectionTimeoutMinNS), ElectionTimeoutMax: time.Duration(c.ElectionTimeoutMaxNS),
 		HeartbeatInterval: time.Duration(c.HeartbeatIntervalNS), StorageLatency: time.Duration(c.StorageLatencyNS),
@@ -209,7 +265,7 @@ func NewReproducibility(seed uint64) Reproducibility {
 }
 
 func (r Run) Validate() error {
-	if r.Schema != SchemaV1 && r.Schema != SchemaVersion {
+	if r.Schema != SchemaV1 && r.Schema != SchemaV2 && r.Schema != SchemaVersion {
 		return fmt.Errorf("%w: schema %q", ErrInvalidArtifact, r.Schema)
 	}
 	if r.Adapter.ID == "" || r.Adapter.Version == "" {
@@ -218,10 +274,10 @@ func (r Run) Validate() error {
 	if !validIdentifier(r.Adapter.ID, true, 128) || !validIdentifier(r.Adapter.Version, false, 64) {
 		return fmt.Errorf("%w: invalid adapter identity", ErrInvalidArtifact)
 	}
-	if err := validateConfiguration(r.Configuration); err != nil {
+	if err := validateConfiguration(r.Configuration, r.Schema == SchemaVersion); err != nil {
 		return err
 	}
-	if err := validateScenario(r.Scenario, r.Configuration.Members, r.Schema == SchemaVersion); err != nil {
+	if err := validateScenario(r.Scenario, r.Configuration.Members, r.Schema); err != nil {
 		return err
 	}
 	if r.Reproducibility.DecisionSchema != decision.SchemaVersion ||
@@ -239,8 +295,12 @@ func (r Run) Validate() error {
 				return fmt.Errorf("%w: inconsistent reference adapter v1 schemas", ErrInvalidArtifact)
 			}
 		case ReferenceAdapterV2:
-			if r.Schema != SchemaVersion || r.Reproducibility.MessageCodec != MessageCodecV2 || r.Reproducibility.CheckerSchema != check.SchemaVersion || r.Reproducibility.ObservationSchema != ObservationSchemaV2 {
+			if r.Schema != SchemaV2 || r.Reproducibility.MessageCodec != MessageCodecV2 || r.Reproducibility.CheckerSchema != check.SchemaV2 || r.Reproducibility.ObservationSchema != ObservationSchemaV2 {
 				return fmt.Errorf("%w: inconsistent reference adapter v2 schemas", ErrInvalidArtifact)
+			}
+		case ReferenceAdapterV3:
+			if r.Schema != SchemaVersion || r.Reproducibility.MessageCodec != MessageCodecV3 || r.Reproducibility.CheckerSchema != check.SchemaVersion || r.Reproducibility.ObservationSchema != ObservationSchemaV3 {
+				return fmt.Errorf("%w: inconsistent reference adapter v3 schemas", ErrInvalidArtifact)
 			}
 		default:
 			return fmt.Errorf("%w: unsupported reference adapter version %q", ErrInvalidArtifact, r.Adapter.Version)
@@ -249,7 +309,7 @@ func (r Run) Validate() error {
 	if len(r.Decisions.Entries) > MaxDecisions {
 		return fmt.Errorf("%w: too many decisions", ErrInvalidArtifact)
 	}
-	if r.Schema == SchemaVersion {
+	if r.Schema != SchemaV1 {
 		if err := validateResourceBudget(r, DefaultMaxArtifactBytes); err != nil {
 			return err
 		}
@@ -303,10 +363,10 @@ func (r Run) Validate() error {
 
 // ValidateExperiment checks the portable inputs needed to start a clean run.
 func ValidateExperiment(scenario Scenario, configuration Configuration) error {
-	if err := validateConfiguration(configuration); err != nil {
+	if err := validateConfiguration(configuration, true); err != nil {
 		return err
 	}
-	return validateScenario(scenario, configuration.Members, true)
+	return validateScenario(scenario, configuration.Members, SchemaVersion)
 }
 
 // Encode validates and writes one bounded JSON artifact.
@@ -324,7 +384,7 @@ func encodeWithLimit(writer io.Writer, run Run, maximum int) error {
 	if err := run.Validate(); err != nil {
 		return err
 	}
-	if run.Schema == SchemaVersion {
+	if run.Schema != SchemaV1 {
 		if err := validateResourceBudget(run, maximum); err != nil {
 			return err
 		}
@@ -503,6 +563,19 @@ func Decode(reader io.Reader) (Run, error) {
 	return decodeWithLimit(reader, DefaultMaxArtifactBytes)
 }
 
+func decodeStrictJSON(data []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("artifact: trailing JSON value")
+	}
+	return nil
+}
+
 func decodeWithLimit(reader io.Reader, maximum int) (Run, error) {
 	if reader == nil {
 		return Run{}, fmt.Errorf("%w: nil reader", ErrInvalidArtifact)
@@ -556,7 +629,7 @@ func DigestJSON(value any) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func validateScenario(scenario Scenario, members []raft.NodeID, allowSnapshots bool) error {
+func validateScenario(scenario Scenario, members []raft.NodeID, schema string) error {
 	if !validIdentifier(scenario.ID, true, 128) || !validIdentifier(scenario.Version, false, 64) || scenario.DurationNS < 0 || scenario.DurationNS > MaxVirtualDurationNS || scenario.MaxSteps == 0 || scenario.MaxSteps > MaxScenarioSteps || len(scenario.Actions) > MaxActions {
 		return fmt.Errorf("%w: invalid scenario identity or duration", ErrInvalidArtifact)
 	}
@@ -570,9 +643,12 @@ func validateScenario(scenario Scenario, members []raft.NodeID, allowSnapshots b
 			return fmt.Errorf("%w: action %d is out of order or range", ErrInvalidArtifact, index)
 		}
 		previous = action.AtNS
+		if schema != SchemaVersion && (action.votersPresent || action.learnersPresent) {
+			return fmt.Errorf("%w: action %d uses run-v3 role fields", ErrInvalidArtifact, index)
+		}
 		switch action.Kind {
 		case ActionPropose:
-			if len(action.Groups) != 0 {
+			if len(action.Groups) != 0 || len(action.Voters) != 0 || len(action.Learners) != 0 {
 				return fmt.Errorf("%w: proposal action %d carries partition groups", ErrInvalidArtifact, index)
 			}
 			if action.Node != "" {
@@ -581,21 +657,39 @@ func validateScenario(scenario Scenario, members []raft.NodeID, allowSnapshots b
 				}
 			}
 		case ActionCrash, ActionRestart, ActionCrashAfterNextPersist:
-			if len(action.Data) != 0 || len(action.Groups) != 0 {
+			if len(action.Data) != 0 || len(action.Groups) != 0 || len(action.Voters) != 0 || len(action.Learners) != 0 {
 				return fmt.Errorf("%w: process action %d carries unrelated fields", ErrInvalidArtifact, index)
 			}
 			if _, ok := memberSet[action.Node]; !ok {
 				return fmt.Errorf("%w: action %d has unknown node", ErrInvalidArtifact, index)
 			}
 		case ActionSnapshot:
-			if !allowSnapshots || len(action.Groups) != 0 {
+			if schema == SchemaV1 || len(action.Groups) != 0 || len(action.Voters) != 0 || len(action.Learners) != 0 {
 				return fmt.Errorf("%w: snapshot action %d is unsupported or carries partition groups", ErrInvalidArtifact, index)
 			}
 			if _, ok := memberSet[action.Node]; !ok {
 				return fmt.Errorf("%w: action %d has unknown node", ErrInvalidArtifact, index)
 			}
+		case ActionBeginMembership:
+			if schema != SchemaVersion || len(action.Data) != 0 || len(action.Groups) != 0 || !raft.ValidateMembership(raft.Membership{Voters: action.Voters, Learners: action.Learners}, members) {
+				return fmt.Errorf("%w: membership action %d is invalid", ErrInvalidArtifact, index)
+			}
+			if action.Node != "" {
+				if _, ok := memberSet[action.Node]; !ok {
+					return fmt.Errorf("%w: action %d has unknown node", ErrInvalidArtifact, index)
+				}
+			}
+		case ActionFinalizeMembership:
+			if schema != SchemaVersion || len(action.Data) != 0 || len(action.Groups) != 0 || len(action.Voters) != 0 || len(action.Learners) != 0 {
+				return fmt.Errorf("%w: finalize action %d is invalid", ErrInvalidArtifact, index)
+			}
+			if action.Node != "" {
+				if _, ok := memberSet[action.Node]; !ok {
+					return fmt.Errorf("%w: action %d has unknown node", ErrInvalidArtifact, index)
+				}
+			}
 		case ActionPartition:
-			if action.Node != "" || len(action.Data) != 0 || len(action.Groups) == 0 {
+			if action.Node != "" || len(action.Data) != 0 || len(action.Groups) == 0 || len(action.Voters) != 0 || len(action.Learners) != 0 {
 				return fmt.Errorf("%w: action %d has no partition groups", ErrInvalidArtifact, index)
 			}
 			partitioned := make(map[raft.NodeID]struct{}, len(members))
@@ -620,7 +714,7 @@ func validateScenario(scenario Scenario, members []raft.NodeID, allowSnapshots b
 				return fmt.Errorf("%w: action %d partition groups are not canonical", ErrInvalidArtifact, index)
 			}
 		case ActionHeal:
-			if action.Node != "" || len(action.Data) != 0 || len(action.Groups) != 0 {
+			if action.Node != "" || len(action.Data) != 0 || len(action.Groups) != 0 || len(action.Voters) != 0 || len(action.Learners) != 0 {
 				return fmt.Errorf("%w: heal action %d carries unrelated fields", ErrInvalidArtifact, index)
 			}
 		default:
@@ -630,7 +724,7 @@ func validateScenario(scenario Scenario, members []raft.NodeID, allowSnapshots b
 	return nil
 }
 
-func validateConfiguration(config Configuration) error {
+func validateConfiguration(config Configuration, allowRoles bool) error {
 	if len(config.Members) == 0 || len(config.Members) > MaxMembers || !slices.IsSorted(config.Members) || config.NetworkMinLatencyNS < 0 || config.NetworkMaxLatencyNS < config.NetworkMinLatencyNS || config.NetworkMaxLatencyNS > MaxVirtualDurationNS || config.ElectionTimeoutMinNS <= 0 || config.ElectionTimeoutMaxNS < config.ElectionTimeoutMinNS || config.ElectionTimeoutMaxNS > MaxVirtualDurationNS || config.HeartbeatIntervalNS <= 0 || config.HeartbeatIntervalNS >= config.ElectionTimeoutMinNS || config.StorageLatencyNS < 0 || config.StorageLatencyNS > MaxVirtualDurationNS || math.IsNaN(config.NetworkLossProbability) || config.NetworkLossProbability < 0 || config.NetworkLossProbability > 1 {
 		return fmt.Errorf("%w: invalid cluster configuration", ErrInvalidArtifact)
 	}
@@ -640,6 +734,12 @@ func validateConfiguration(config Configuration) error {
 		if !validIdentifier(string(member), false, 64) || index > 0 && member == canonical[index-1] {
 			return fmt.Errorf("%w: invalid membership", ErrInvalidArtifact)
 		}
+	}
+	if !allowRoles && (config.votersPresent || config.learnersPresent || len(config.Voters) != 0 || len(config.Learners) != 0) {
+		return fmt.Errorf("%w: voter roles require run v3", ErrInvalidArtifact)
+	}
+	if allowRoles && (len(config.Voters) > 0 || len(config.Learners) > 0) && !raft.ValidateMembership(raft.Membership{Voters: config.Voters, Learners: config.Learners}, canonical) {
+		return fmt.Errorf("%w: invalid initial voter or learner sets", ErrInvalidArtifact)
 	}
 	return nil
 }
@@ -703,6 +803,16 @@ func validateResourceBudget(run Run, maximum int) error {
 			return err
 		}
 	}
+	for _, voter := range run.Configuration.Voters {
+		if err := add(len(voter)); err != nil {
+			return err
+		}
+	}
+	for _, learner := range run.Configuration.Learners {
+		if err := add(len(learner)); err != nil {
+			return err
+		}
+	}
 	for _, action := range run.Scenario.Actions {
 		if err := add(len(action.Kind) + len(action.Node) + len(action.Data)); err != nil {
 			return err
@@ -712,6 +822,16 @@ func validateResourceBudget(run Run, maximum int) error {
 				if err := add(len(member)); err != nil {
 					return err
 				}
+			}
+		}
+		for _, voter := range action.Voters {
+			if err := add(len(voter)); err != nil {
+				return err
+			}
+		}
+		for _, learner := range action.Learners {
+			if err := add(len(learner)); err != nil {
+				return err
 			}
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/aminkbi/d-raft/artifact"
+	"github.com/aminkbi/d-raft/check"
 	"github.com/aminkbi/d-raft/decision"
 	"github.com/aminkbi/d-raft/experiment"
 	"github.com/aminkbi/d-raft/raft"
@@ -82,7 +83,7 @@ func Artifact(input artifact.Run, bounds Bounds) (Result, error) {
 		if err := recorder.Err(); err != nil {
 			return artifact.Run{}, false, err
 		}
-		candidate := input
+		candidate := cloneRun(input)
 		candidate.Scenario = cloneScenario(scenario)
 		candidate.Decisions = recorder.Tape()
 		candidate.Outcome = outcome
@@ -127,7 +128,7 @@ func minimize(input artifact.Run, bounds Bounds, target string, evaluate evaluat
 				return Result{}, err
 			}
 			if matches {
-				current = candidate
+				current = cloneRun(candidate)
 				guide = decision.CloneTape(candidate.Decisions)
 				granularity = max(2, granularity-1)
 				accepted = true
@@ -159,7 +160,7 @@ func minimize(input artifact.Run, bounds Bounds, target string, evaluate evaluat
 				return Result{}, err
 			}
 			if matches {
-				current = candidate
+				current = cloneRun(candidate)
 				guide = candidateGuide
 				granularity = max(2, granularity-1)
 				accepted = true
@@ -189,7 +190,7 @@ func minimize(input artifact.Run, bounds Bounds, target string, evaluate evaluat
 				return Result{}, err
 			}
 			if matches {
-				current = candidate
+				current = cloneRun(candidate)
 				guide = candidateGuide
 				shrunk++
 				break
@@ -201,7 +202,7 @@ func minimize(input artifact.Run, bounds Bounds, target string, evaluate evaluat
 	}
 
 	return Result{
-		Run: current, Runs: runs,
+		Run: cloneRun(current), Runs: runs,
 		ActionsRemoved:         originalActions - len(current.Scenario.Actions),
 		GuidanceEntriesRemoved: guideStart - len(guide.Entries),
 		SelectionsShrunk:       shrunk,
@@ -271,6 +272,8 @@ func cloneScenario(scenario artifact.Scenario) artifact.Scenario {
 	scenario.Actions = make([]artifact.Action, len(source))
 	for index, action := range source {
 		action.Data = slices.Clone(action.Data)
+		action.Voters = slices.Clone(action.Voters)
+		action.Learners = slices.Clone(action.Learners)
 		groups := action.Groups
 		action.Groups = make([][]raft.NodeID, len(groups))
 		for group := range groups {
@@ -284,7 +287,15 @@ func cloneScenario(scenario artifact.Scenario) artifact.Scenario {
 func cloneRun(run artifact.Run) artifact.Run {
 	run.Scenario = cloneScenario(run.Scenario)
 	run.Configuration.Members = slices.Clone(run.Configuration.Members)
+	run.Configuration.Voters = slices.Clone(run.Configuration.Voters)
+	run.Configuration.Learners = slices.Clone(run.Configuration.Learners)
 	run.Decisions = decision.CloneTape(run.Decisions)
-	run.Outcome.Violations = slices.Clone(run.Outcome.Violations)
+	sourceViolations := run.Outcome.Violations
+	run.Outcome.Violations = make([]check.Violation, len(sourceViolations))
+	for index, violation := range sourceViolations {
+		violation.Nodes = slices.Clone(violation.Nodes)
+		violation.Evidence = slices.Clone(violation.Evidence)
+		run.Outcome.Violations[index] = violation
+	}
 	return run
 }

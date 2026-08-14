@@ -1,6 +1,7 @@
 package experiment
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -36,11 +37,28 @@ func TestScenarioRecordAndReplay(t *testing.T) {
 	if err != nil || recorder.Err() != nil {
 		t.Fatalf("original outcome=%+v err=%v recorder=%v", original, err, recorder.Err())
 	}
-	replay, err := decision.NewTapeDecider(recorder.Tape())
+	run := artifact.Run{
+		Schema:          artifact.SchemaVersion,
+		Scenario:        scenario,
+		Adapter:         artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterCurrent},
+		Configuration:   artifact.ConfigurationFrom(config),
+		Reproducibility: artifact.NewReproducibility(123),
+		Decisions:       recorder.Tape(),
+		Outcome:         original,
+	}
+	var encoded bytes.Buffer
+	if err := artifact.Encode(&encoded, run); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := artifact.Decode(bytes.NewReader(encoded.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := Execute(scenario, artifact.ConfigurationFrom(config), replay)
+	replay, err := decision.NewTapeDecider(decoded.Decisions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := Execute(decoded.Scenario, decoded.Configuration, replay)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,11 +84,28 @@ func TestCrashAfterPersistScenarioRecordAndReplay(t *testing.T) {
 	if err != nil || original.Status != artifact.OutcomeCompleted {
 		t.Fatalf("original=%+v err=%v", original, err)
 	}
-	replay, err := decision.NewTapeDecider(recorder.Tape())
+	run := artifact.Run{
+		Schema:          artifact.SchemaVersion,
+		Scenario:        scenario,
+		Adapter:         artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterCurrent},
+		Configuration:   artifact.ConfigurationFrom(config),
+		Reproducibility: artifact.NewReproducibility(91),
+		Decisions:       recorder.Tape(),
+		Outcome:         original,
+	}
+	var encoded bytes.Buffer
+	if err := artifact.Encode(&encoded, run); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := artifact.Decode(bytes.NewReader(encoded.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := Execute(scenario, artifact.ConfigurationFrom(config), replay)
+	replay, err := decision.NewTapeDecider(decoded.Decisions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := Execute(decoded.Scenario, decoded.Configuration, replay)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +160,7 @@ func TestSnapshotScenarioActionCompactsReferenceNode(t *testing.T) {
 	}
 }
 
-func TestObservationV2DigestIncludesSnapshotState(t *testing.T) {
+func TestObservationV3DigestIncludesSnapshotAndMembershipState(t *testing.T) {
 	t.Parallel()
 
 	base := observationSnapshot{Nodes: []nodeSnapshot{{ID: "a", Up: true, Store: raftsim.Store{}}}}
@@ -133,7 +168,7 @@ func TestObservationV2DigestIncludesSnapshotState(t *testing.T) {
 	withSnapshot.Nodes = append([]nodeSnapshot(nil), base.Nodes...)
 	withSnapshot.Nodes[0].Store.State = raft.PersistentState{
 		HardState: raft.HardState{CurrentTerm: 1, CommitIndex: 1},
-		Snapshot:  raft.Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 1, Members: []raft.NodeID{"a"}, Data: []byte("state")},
+		Snapshot:  raft.Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 1, Members: []raft.NodeID{"a"}, Data: []byte("state"), Membership: raft.StableMembership([]raft.NodeID{"a"}, nil)},
 	}
 	left, err := artifact.DigestJSON(base)
 	if err != nil {
@@ -144,6 +179,63 @@ func TestObservationV2DigestIncludesSnapshotState(t *testing.T) {
 		t.Fatal(err)
 	}
 	if left == right {
-		t.Fatal("snapshot state did not change observation-v2 digest")
+		t.Fatal("snapshot state did not change observation-v3 digest")
+	}
+}
+
+func TestMembershipScenarioRecordAndReplay(t *testing.T) {
+	t.Parallel()
+
+	config := raftsim.DefaultConfig("a", "b", "c", "d")
+	config.Voters = []raft.NodeID{"a", "b", "c"}
+	config.Learners = []raft.NodeID{"d"}
+	config.Seed = 17
+	config.Network = sim.LinkConfig{MinLatency: time.Millisecond, MaxLatency: 3 * time.Millisecond}
+	config.ElectionTimeoutMin = 40 * time.Millisecond
+	config.ElectionTimeoutMax = 80 * time.Millisecond
+	config.HeartbeatInterval = 10 * time.Millisecond
+	scenario := artifact.Scenario{
+		ID: "membership-cycle", Version: "1", DurationNS: int64(2 * time.Second), MaxSteps: 100_000,
+		Actions: []artifact.Action{
+			{AtNS: int64(400 * time.Millisecond), Kind: artifact.ActionBeginMembership, Voters: []raft.NodeID{"b", "c", "d"}, Learners: []raft.NodeID{"a"}},
+			{AtNS: int64(900 * time.Millisecond), Kind: artifact.ActionFinalizeMembership},
+			{AtNS: int64(1500 * time.Millisecond), Kind: artifact.ActionPropose, Data: []byte("after-membership")},
+		},
+	}
+	recorder := decision.NewRecorder(decision.NewSeedDecider(91))
+	original, err := Execute(scenario, artifact.ConfigurationFrom(config), recorder)
+	if err != nil || recorder.Err() != nil || original.Status != artifact.OutcomeCompleted {
+		t.Fatalf("original=%+v err=%v recorder=%v", original, err, recorder.Err())
+	}
+	run := artifact.Run{
+		Schema:          artifact.SchemaVersion,
+		Scenario:        scenario,
+		Adapter:         artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterCurrent},
+		Configuration:   artifact.ConfigurationFrom(config),
+		Reproducibility: artifact.NewReproducibility(91),
+		Decisions:       recorder.Tape(),
+		Outcome:         original,
+	}
+	var encoded bytes.Buffer
+	if err := artifact.Encode(&encoded, run); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := artifact.Decode(bytes.NewReader(encoded.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := decision.NewTapeDecider(decoded.Decisions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := Execute(decoded.Scenario, decoded.Configuration, replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if !artifact.OutcomesEqual(original, replayed) {
+		t.Fatalf("original=%+v replayed=%+v", original, replayed)
 	}
 }

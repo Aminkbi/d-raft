@@ -6,6 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/aminkbi/d-raft/artifact"
+	"github.com/aminkbi/d-raft/decision"
+	"github.com/aminkbi/d-raft/raft"
+	"github.com/aminkbi/d-raft/raftsim"
 )
 
 func TestRunInspectReplayWorkflow(t *testing.T) {
@@ -65,5 +71,44 @@ func TestExploreCommandIsBounded(t *testing.T) {
 	code := execute([]string{"explore", "--duration", "100ms", "--max-runs", "10", "--depth", "1"}, &stdout, &stderr)
 	if code != 0 || !strings.Contains(stdout.String(), "runs:") || !strings.Contains(stdout.String(), "run-budget truncated:") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestInspectShowsInitialRolesAndMembershipActions(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "membership.json")
+	config := raftsim.DefaultConfig("a", "b", "c", "d")
+	config.Voters = []raft.NodeID{"a", "b", "c"}
+	config.Learners = []raft.NodeID{"d"}
+	digest, err := artifact.DigestJSON(map[string]string{"state": "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := artifact.Run{
+		Schema:  artifact.SchemaVersion,
+		Adapter: artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterCurrent},
+		Scenario: artifact.Scenario{ID: "membership", Version: "1", DurationNS: int64(time.Second), MaxSteps: 100,
+			Actions: []artifact.Action{
+				{Kind: artifact.ActionBeginMembership, Voters: []raft.NodeID{"b", "c", "d"}, Learners: []raft.NodeID{"a"}},
+				{Kind: artifact.ActionFinalizeMembership},
+			},
+		},
+		Configuration:   artifact.ConfigurationFrom(config),
+		Reproducibility: artifact.NewReproducibility(1),
+		Decisions:       decision.Tape{Schema: decision.SchemaVersion},
+		Outcome:         artifact.Outcome{Status: artifact.OutcomeCompleted, EndNS: int64(time.Second), ObservationDigest: digest},
+	}
+	if err := writeArtifact(path, run); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := execute([]string{"inspect", path}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, expected := range []string{`voters: "a","b","c"`, `learners: "d"`, `kind="begin_membership"`, `voters="b","c","d"`, `learners="a"`, `kind="finalize_membership"`} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("inspect output does not contain %q:\n%s", expected, stdout.String())
+		}
 	}
 }

@@ -128,6 +128,16 @@ func applyAction(cluster *raftsim.Cluster, action artifact.Action) error {
 		return cluster.CrashAfterNextPersist(action.Node)
 	case artifact.ActionSnapshot:
 		return cluster.Snapshot(action.Node, action.Data)
+	case artifact.ActionBeginMembership:
+		if action.Node == "" {
+			return cluster.BeginMembershipChange(action.Voters, action.Learners)
+		}
+		return cluster.BeginMembershipChangeTo(action.Node, action.Voters, action.Learners)
+	case artifact.ActionFinalizeMembership:
+		if action.Node == "" {
+			return cluster.FinalizeMembershipChange()
+		}
+		return cluster.FinalizeMembershipChangeTo(action.Node)
 	case artifact.ActionPartition:
 		return cluster.Partition(action.Groups...)
 	case artifact.ActionHeal:
@@ -161,6 +171,8 @@ func snapshotDigest(cluster *raftsim.Cluster, violations []check.Violation) (str
 
 func cloneAction(action artifact.Action) artifact.Action {
 	action.Data = slices.Clone(action.Data)
+	action.Voters = slices.Clone(action.Voters)
+	action.Learners = slices.Clone(action.Learners)
 	action.Groups = make([][]raft.NodeID, len(action.Groups))
 	for index := range action.Groups {
 		action.Groups[index] = slices.Clone(action.Groups[index])

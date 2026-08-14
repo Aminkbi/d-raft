@@ -383,9 +383,120 @@ func TestLaggingFollowerInstallsLeaderSnapshot(t *testing.T) {
 	}
 	laggerStore.InstalledSnapshot.Members[0] = "mutated"
 	laggerStore.InstalledSnapshot.Data[0] ^= 0xff
+	laggerStore.InstalledSnapshot.Membership.Voters[0] = "mutated"
 	again, _ := cluster.Store(lagger)
-	if again.InstalledSnapshot.Members[0] == "mutated" || slices.Equal(again.InstalledSnapshot.Data, laggerStore.InstalledSnapshot.Data) {
+	if again.InstalledSnapshot.Members[0] == "mutated" || again.InstalledSnapshot.Membership.Voters[0] == "mutated" || slices.Equal(again.InstalledSnapshot.Data, laggerStore.InstalledSnapshot.Data) {
 		t.Fatal("Store did not deep-clone installed snapshot")
+	}
+}
+
+func TestClusterJointConsensusPromotesLearnerAndRemovesLeader(t *testing.T) {
+	t.Parallel()
+
+	config := testConfig("a", "b", "c", "d")
+	config.Voters = []raft.NodeID{"a", "b", "c"}
+	config.Learners = []raft.NodeID{"d"}
+	cluster := mustCluster(t, config)
+	runUntil(t, cluster, 500*time.Millisecond)
+	oldLeader, ok := cluster.Leader()
+	if !ok || oldLeader == "d" {
+		t.Fatalf("initial leader=%q statuses=%+v", oldLeader, cluster.Statuses())
+	}
+	newVoters := []raft.NodeID{"b", "c", "d"}
+	newLearners := []raft.NodeID{oldLeader}
+	if oldLeader != "a" {
+		newVoters = make([]raft.NodeID, 0, 3)
+		for _, id := range []raft.NodeID{"a", "b", "c", "d"} {
+			if id != oldLeader && len(newVoters) < 3 {
+				newVoters = append(newVoters, id)
+			}
+		}
+		slices.Sort(newVoters)
+	}
+	if err := cluster.BeginMembershipChange(newVoters, newLearners); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+500*time.Millisecond)
+	jointLeader, ok := cluster.Leader()
+	if !ok {
+		t.Fatalf("no joint leader: %+v", cluster.Statuses())
+	}
+	jointStatus, _ := cluster.Status(jointLeader)
+	if !jointStatus.Membership.Joint() || jointStatus.CommitIndex < 2 {
+		t.Fatalf("joint status = %+v", jointStatus)
+	}
+	if err := cluster.Snapshot(jointLeader, []byte("joint-checkpoint")); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+50*time.Millisecond)
+	jointStore, _ := cluster.Store(jointLeader)
+	if !jointStore.State.Snapshot.Membership.Joint() {
+		t.Fatalf("joint snapshot = %+v", jointStore.State.Snapshot)
+	}
+	if err := cluster.FinalizeMembershipChange(); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+time.Second)
+	newLeader, ok := cluster.Leader()
+	if !ok || newLeader == oldLeader || !slices.Contains(newVoters, newLeader) {
+		t.Fatalf("final leader=%q old=%q statuses=%+v", newLeader, oldLeader, cluster.Statuses())
+	}
+	for _, status := range cluster.Statuses() {
+		if status.Membership.Joint() || !slices.Equal(status.Membership.Voters, newVoters) || !slices.Equal(status.Membership.Learners, newLearners) {
+			t.Fatalf("node %q membership = %+v", status.ID, status.Membership)
+		}
+	}
+	for _, id := range cluster.Members() {
+		if err := cluster.Crash(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range cluster.Members() {
+		if err := cluster.Restart(id); err != nil {
+			t.Fatal(err)
+		}
+		status, err := cluster.Status(id)
+		if err != nil || status.Membership.Joint() || !slices.Equal(status.Membership.Voters, newVoters) || !slices.Equal(status.Membership.Learners, newLearners) {
+			t.Fatalf("restart status=%+v err=%v", status, err)
+		}
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+time.Second)
+	newLeader, ok = cluster.Leader()
+	if !ok || !slices.Contains(newVoters, newLeader) {
+		t.Fatalf("post-restart leader=%q statuses=%+v", newLeader, cluster.Statuses())
+	}
+	if err := cluster.Propose([]byte("after-reconfiguration")); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+200*time.Millisecond)
+	if violations := cluster.Violations(); len(violations) != 0 {
+		t.Fatalf("violations = %+v", violations)
+	}
+}
+
+func TestClusterOwnsInitialRoleConfigurationAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	config := testConfig("a", "b", "c")
+	config.Voters = []raft.NodeID{"a", "b"}
+	config.Learners = []raft.NodeID{"c"}
+	cluster := mustCluster(t, config)
+	if err := cluster.Crash("c"); err != nil {
+		t.Fatal(err)
+	}
+	config.Voters[0] = "c"
+	config.Learners[0] = "a"
+	if err := cluster.Restart("c"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := cluster.Status("c")
+	if err != nil || !slices.Equal(status.Membership.Voters, []raft.NodeID{"a", "b"}) || !slices.Equal(status.Membership.Learners, []raft.NodeID{"c"}) {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	status.Membership.Voters[0] = "mutated"
+	again, err := cluster.Status("c")
+	if err != nil || again.Membership.Voters[0] != "a" {
+		t.Fatalf("status membership was not cloned: status=%+v err=%v", again, err)
 	}
 }
 
