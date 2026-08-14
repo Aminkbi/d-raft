@@ -1,0 +1,17 @@
+diff --git a/raft/node.go b/raft/node.go
+index 964c1f6..59fc246 100644
+--- a/raft/node.go
++++ b/raft/node.go
+@@ -459,7 +459,10 @@ func (n *Node) becomeLeader() ([]Effect, error) {
+ 
+ func (n *Node) handleAppendEntries(message Message) (bool, []Effect) {
+ 	if message.Term < n.state.HardState.CurrentTerm {
+-		return false, []Effect{{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, false, 0, nextIndexAfter(n.lastIndex()))}}
++		return false, []Effect{
++			{Kind: EffectResetElectionTimer},
++			{Kind: EffectSend, Message: n.appendResponse(message.From, message.Sequence, true, message.PrevLogIndex, 0)},
++		}
+ 	}
+ 	if n.role != Follower || n.leader != message.From {
+ 		n.becomeFollower(message.Term, message.From)
+

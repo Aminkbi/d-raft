@@ -1,0 +1,14 @@
+diff --git a/raft/node.go b/raft/node.go
+index 964c1f6..672b851 100644
+--- a/raft/node.go
++++ b/raft/node.go
+@@ -356,7 +356,7 @@ func (n *Node) stepMessage(message Message) (bool, []Effect, error) {
+ 	}
+ 
+ 	dirty := false
+-	if message.Term > n.state.HardState.CurrentTerm {
++	if message.Term > n.state.HardState.CurrentTerm && message.Type != RequestVote {
+ 		n.becomeFollower(message.Term, "")
+ 		dirty = true
+ 	}
+

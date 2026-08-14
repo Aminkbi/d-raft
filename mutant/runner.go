@@ -493,7 +493,8 @@ func runTest(parent context.Context, worktree, pkg, test string) (CommandResult,
 	ctx, cancel := context.WithTimeout(parent, TestTimeout+15*time.Second)
 	defer cancel()
 	start := time.Now()
-	command := exec.CommandContext(ctx, "go", "test", "-v", "-count=1", "-timeout="+TestTimeout.String(), "-run=^"+regexp.QuoteMeta(test)+"$", pkg)
+	goCommand := filepath.Join(runtime.GOROOT(), "bin", "go")
+	command := exec.CommandContext(ctx, goCommand, "test", "-v", "-count=1", "-timeout="+TestTimeout.String(), "-run=^"+regexp.QuoteMeta(test)+"$", pkg)
 	command.Dir = worktree
 	environment, envErr := isolatedTestEnvironment(worktree)
 	if envErr != nil {
@@ -539,6 +540,7 @@ func isolatedTestEnvironment(worktree string) ([]string, error) {
 		"HOME="+home,
 		"TMPDIR="+temporary,
 		"GOCACHE="+cache,
+		"GOROOT="+runtime.GOROOT(),
 		"GOWORK=off",
 		"GOTOOLCHAIN=local",
 		"GOFLAGS=-mod=readonly",
@@ -550,13 +552,13 @@ func isolatedTestEnvironment(worktree string) ([]string, error) {
 
 func allowedEnvironmentName(name string) bool {
 	upper := strings.ToUpper(name)
-	return upper == "PATH" || upper == "LANG" || upper == "LC_ALL" || upper == "LC_CTYPE" || upper == "TZ" || upper == "GOROOT"
+	return upper == "PATH" || upper == "LANG" || upper == "LC_ALL" || upper == "LC_CTYPE" || upper == "TZ"
 }
 
 func sensitiveEnvironmentName(name string) bool {
 	upper := strings.ToUpper(name)
 	switch upper {
-	case "HOME", "TMPDIR", "GOCACHE", "GOWORK", "GOTOOLCHAIN", "GOFLAGS", "GOPROXY", "GOSUMDB",
+	case "HOME", "TMPDIR", "GOCACHE", "GOROOT", "GOWORK", "GOTOOLCHAIN", "GOFLAGS", "GOPROXY", "GOSUMDB",
 		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "NETRC", "GOAUTH":
 		return true
 	}

@@ -1,0 +1,1 @@
+corpus/mutants/**/*.patch -whitespace

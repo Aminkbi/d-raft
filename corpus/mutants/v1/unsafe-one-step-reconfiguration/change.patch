@@ -1,0 +1,38 @@
+diff --git a/raft/node.go b/raft/node.go
+index 964c1f6..3b185a0 100644
+--- a/raft/node.go
++++ b/raft/node.go
+@@ -262,19 +262,7 @@ func (n *Node) beginMembership(voters, learners []NodeID) (bool, []Effect, error
+ 	if !validateMembership(target, n.members) || membershipsEqual(target, n.membership) {
+ 		return false, nil, fmt.Errorf("%w: invalid or unchanged target membership", ErrInvalidInput)
+ 	}
+-	jointLearners := make([]NodeID, 0, len(target.Learners))
+-	for _, learner := range target.Learners {
+-		if !slices.Contains(n.membership.Voters, learner) {
+-			jointLearners = append(jointLearners, learner)
+-		}
+-	}
+-	joint := Membership{
+-		Voters:         slices.Clone(target.Voters),
+-		VotersOutgoing: slices.Clone(n.membership.Voters),
+-		Learners:       jointLearners,
+-		LearnersNext:   slices.Clone(target.Learners),
+-	}
+-	return n.appendMembershipEntry(EntryConfigJoint, joint)
++	return n.appendMembershipEntry(EntryConfigFinal, target)
+ }
+ 
+ func (n *Node) finalizeMembership() (bool, []Effect, error) {
+diff --git a/raft/membership.go b/raft/membership.go
+index 4b4e1c9..c77c355 100644
+--- a/raft/membership.go
++++ b/raft/membership.go
+@@ -77,7 +77,7 @@ func transitionMembership(current Membership, entry Entry, universe []NodeID) (M
+ 		}
+ 		return CloneMembership(entry.Membership), true
+ 	case EntryConfigFinal:
+-		if len(entry.Data) != 0 || !current.Joint() || entry.Membership.Joint() || !validateMembership(entry.Membership, universe) || !slices.Equal(entry.Membership.Voters, current.Voters) || !slices.Equal(entry.Membership.Learners, current.LearnersNext) {
++		if len(entry.Data) != 0 || entry.Membership.Joint() || !validateMembership(entry.Membership, universe) || current.Joint() && (!slices.Equal(entry.Membership.Voters, current.Voters) || !slices.Equal(entry.Membership.Learners, current.LearnersNext)) {
+ 			return Membership{}, false
+ 		}
+ 		return CloneMembership(entry.Membership), true

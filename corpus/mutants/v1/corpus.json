@@ -1,0 +1,109 @@
+{
+  "schema": "d-raft.mutant/v1",
+  "repository": "github.com/aminkbi/d-raft",
+  "base_commit": "9304bcd0ba7f5cc470ac67149bb9b96bc1be6523",
+  "mutants": [
+    {
+      "id": "duplicate-vote-count",
+      "package": "./raft",
+      "test": "TestMutantDuplicateVoteCount",
+      "invariant": {
+        "name": "raft/election-certificate",
+        "class": "safety"
+      },
+      "activation_patch": {
+        "path": "activation.patch",
+        "sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c"
+      },
+      "mutant_patch": {
+        "path": "duplicate-vote-count/change.patch",
+        "sha256": "033bb5137f949cd314a65da2b54bdcbf5c128ddf19233646b06201024a9e4da9"
+      }
+    },
+    {
+      "id": "ignored-higher-term",
+      "package": "./raft",
+      "test": "TestMutantIgnoredHigherTerm",
+      "invariant": {
+        "name": "raft/higher-term-stepdown",
+        "class": "conformance"
+      },
+      "activation_patch": {
+        "path": "activation.patch",
+        "sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c"
+      },
+      "mutant_patch": {
+        "path": "ignored-higher-term/change.patch",
+        "sha256": "e05f4ea59d9192306b70e0d1c4eb115e746962de21add7c72111533a983665ad"
+      }
+    },
+    {
+      "id": "non-persisted-vote",
+      "package": "./raft",
+      "test": "TestMutantNonPersistedVote",
+      "invariant": {
+        "name": "raft/election-certificate",
+        "class": "safety"
+      },
+      "activation_patch": {
+        "path": "activation.patch",
+        "sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c"
+      },
+      "mutant_patch": {
+        "path": "non-persisted-vote/change.patch",
+        "sha256": "26c825dbbc52f1404d9d012ac00820c4cc71680174f13ba50c5dd256fe97ac40"
+      }
+    },
+    {
+      "id": "snapshot-before-persistence",
+      "package": "./raft",
+      "test": "TestMutantSnapshotBeforePersistence",
+      "invariant": {
+        "name": "raft/snapshot-persistence-order",
+        "class": "conformance"
+      },
+      "activation_patch": {
+        "path": "activation.patch",
+        "sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c"
+      },
+      "mutant_patch": {
+        "path": "snapshot-before-persistence/change.patch",
+        "sha256": "91975c2448face929d22280a5c27eee299f10b26df0f2ad78116d7cf0abbb157"
+      }
+    },
+    {
+      "id": "stale-heartbeat-acceptance",
+      "package": "./raft",
+      "test": "TestMutantStaleHeartbeatAcceptance",
+      "invariant": {
+        "name": "raft/stale-heartbeat-rejection",
+        "class": "conformance"
+      },
+      "activation_patch": {
+        "path": "activation.patch",
+        "sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c"
+      },
+      "mutant_patch": {
+        "path": "stale-heartbeat-acceptance/change.patch",
+        "sha256": "74ec9422b2dc263b51eb4727d28e6d9dfea0eadc7a5fd2d4fc6f65fe272ed90f"
+      }
+    },
+    {
+      "id": "unsafe-one-step-reconfiguration",
+      "package": "./raft",
+      "test": "TestMutantUnsafeOneStepReconfiguration",
+      "invariant": {
+        "name": "raft/membership-transition",
+        "class": "safety"
+      },
+      "activation_patch": {
+        "path": "activation.patch",
+        "sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c"
+      },
+      "mutant_patch": {
+        "path": "unsafe-one-step-reconfiguration/change.patch",
+        "sha256": "d63c8af6d10ca7cc06d4d96da417ccbe7797b2851f523daf33a1533be880fbbc"
+      }
+    }
+  ]
+}

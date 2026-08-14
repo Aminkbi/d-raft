@@ -1,0 +1,17 @@
+diff --git a/raft/node.go b/raft/node.go
+index 964c1f6..90789d0 100644
+--- a/raft/node.go
++++ b/raft/node.go
+@@ -152,6 +152,11 @@ func (n *Node) Step(input Input) ([]Effect, error) {
+ 	if dirty {
+ 		token := n.nextWriteToken
+ 		n.nextWriteToken++
++		if input.Kind == InputMessage && input.Message.Type == InstallSnapshot && len(effects) == 3 &&
++			effects[0].Kind == EffectResetElectionTimer && effects[1].Kind == EffectInstallSnapshot && effects[2].Kind == EffectSend {
++			n.pending = &pendingWrite{token: token, effects: []Effect{effects[0], effects[2]}}
++			return []Effect{{Kind: EffectPersist, WriteToken: token, State: cloneState(n.state)}, effects[1]}, nil
++		}
+ 		n.pending = &pendingWrite{token: token, effects: effects}
+ 		return []Effect{{Kind: EffectPersist, WriteToken: token, State: cloneState(n.state)}}, nil
+ 	}
+

@@ -39,19 +39,26 @@ For every mutant the runner:
 6. removes the registered worktree and its private runtime directories.
 
 The Go subprocess receives a private `HOME`, `TMPDIR`, and `GOCACHE`, with
-workspace/toolchain/module behavior fixed locally and proxy, credential, and
-common secret variables removed. Commands are invoked directly without a
-shell. Build failures, panics, timeouts, malformed patches, and infrastructure
-errors are never counted as safety kills.
+the exact runner toolchain selected through `runtime.GOROOT`, workspace and
+module behavior fixed locally, and proxy, credential, and common secret
+variables removed. Commands are invoked directly without a shell. Build
+failures, panics, timeouts, malformed patches, and infrastructure errors are
+never counted as safety kills.
 
 ## Running a corpus
 
 ```sh
-go run ./cmd/draft-mutants \
+mkdir -p .research-bin
+go build -buildvcs=true -o .research-bin/draft-mutants ./cmd/draft-mutants
+.research-bin/draft-mutants \
   -repo . \
   -manifest corpus/mutants/v1/corpus.json \
   -out corpus/mutants/v1/results/linux-amd64.json
 ```
+
+The explicit build is part of the evidence contract: it embeds the executable
+Git revision and dirty bit. `go run` does not preserve that VCS information on
+all supported Go invocations and is therefore rejected by the runner.
 
 Output files are published atomically and never overwrite an existing result.
 Omit `-out` (or use `-out -`) for standard output. Exit status `0` means every

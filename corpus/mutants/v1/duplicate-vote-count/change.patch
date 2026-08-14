@@ -1,0 +1,16 @@
+diff --git a/raft/node.go b/raft/node.go
+index 964c1f6..1521675 100644
+--- a/raft/node.go
++++ b/raft/node.go
+@@ -416,6 +416,10 @@ func (n *Node) handleRequestVoteResponse(message Message) (bool, []Effect, error
+ 		return false, nil, nil
+ 	}
+ 	if _, exists := n.votes[message.From]; exists {
++		if len(n.votes)+1 >= len(n.membership.Voters)/2+1 {
++			effects, err := n.becomeLeader()
++			return err == nil, effects, err
++		}
+ 		return false, nil, nil
+ 	}
+ 	n.votes[message.From] = struct{}{}
+

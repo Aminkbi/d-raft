@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -157,7 +158,7 @@ func TestExecutionEvidenceIsExactAndBounded(t *testing.T) {
 
 func TestSensitiveTestEnvironmentNamesAreScrubbed(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"HTTP_PROXY", "https_proxy", "GITHUB_TOKEN", "DB_PASSWORD", "AWS_SECRET_ACCESS_KEY", "GIT_ASKPASS", "SSH_AUTH_SOCK", "GOAUTH"} {
+	for _, name := range []string{"HTTP_PROXY", "https_proxy", "GITHUB_TOKEN", "DB_PASSWORD", "AWS_SECRET_ACCESS_KEY", "GIT_ASKPASS", "SSH_AUTH_SOCK", "GOAUTH", "GOROOT"} {
 		if !sensitiveEnvironmentName(name) {
 			t.Fatalf("%s was not considered sensitive", name)
 		}
@@ -167,7 +168,7 @@ func TestSensitiveTestEnvironmentNamesAreScrubbed(t *testing.T) {
 			t.Fatalf("%s was incorrectly scrubbed", name)
 		}
 	}
-	for _, name := range []string{"PATH", "LANG", "LC_ALL", "TZ", "GOROOT"} {
+	for _, name := range []string{"PATH", "LANG", "LC_ALL", "TZ"} {
 		if !allowedEnvironmentName(name) {
 			t.Fatalf("%s should be retained in the isolated environment", name)
 		}
@@ -176,6 +177,36 @@ func TestSensitiveTestEnvironmentNamesAreScrubbed(t *testing.T) {
 		if allowedEnvironmentName(name) {
 			t.Fatalf("%s should not be inherited by the isolated environment", name)
 		}
+	}
+	environment, err := isolatedTestEnvironment(filepath.Join(t.TempDir(), "worktree"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "GOROOT=" + runtime.GOROOT()
+	count := 0
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, "GOROOT=") {
+			count++
+			if entry != want {
+				t.Fatalf("GOROOT=%q want %q", entry, want)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("GOROOT entries=%d", count)
+	}
+}
+
+func TestRunnerToolchainMatchesRecordedVersion(t *testing.T) {
+	t.Parallel()
+	command := filepath.Join(runtime.GOROOT(), "bin", "go")
+	output, err := exec.Command(command, "version").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) < 3 || fields[2] != runtime.Version() {
+		t.Fatalf("toolchain=%q runtime=%q", output, runtime.Version())
 	}
 }
 

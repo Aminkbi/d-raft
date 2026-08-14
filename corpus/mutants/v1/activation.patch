@@ -1,0 +1,283 @@
+diff --git a/raft/mutant_activation_test.go b/raft/mutant_activation_test.go
+new file mode 100644
+index 0000000..265a62b
+--- /dev/null
++++ b/raft/mutant_activation_test.go
+@@ -0,0 +1,276 @@
++package raft_test
++
++import (
++	"slices"
++	"testing"
++
++	"github.com/aminkbi/d-raft/check"
++	"github.com/aminkbi/d-raft/raft"
++)
++
++const (
++	nonPersistedVoteID      = "non-persisted-vote"
++	duplicateVoteCountID    = "duplicate-vote-count"
++	ignoredHigherTermID     = "ignored-higher-term"
++	staleHeartbeatID        = "stale-heartbeat-acceptance"
++	snapshotBeforePersistID = "snapshot-before-persistence"
++	unsafeReconfigurationID = "unsafe-one-step-reconfiguration"
++)
++
++func TestMutantNonPersistedVote(t *testing.T) {
++	activate(t, nonPersistedVoteID)
++	members := []raft.NodeID{"a", "b", "c"}
++	a := newNode(t, raft.Config{ID: "a", Members: members}, raft.PersistentState{HardState: raft.HardState{CurrentTerm: 3}})
++	_, campaignEffects := acknowledge(t, a, step(t, a, raft.Input{Kind: raft.InputElectionTimeout}))
++	request := findMessage(t, campaignEffects, raft.RequestVote, "b")
++	if request.Term != 4 {
++		t.Fatalf("campaign request = %+v", request)
++	}
++
++	b := newNode(t, raft.Config{ID: "b", Members: members}, raft.PersistentState{})
++	effects := step(t, b, raft.Input{Kind: raft.InputMessage, Message: request})
++	status := b.Status()
++	state := b.State()
++	baseline := effectKindsEqual(effects, raft.EffectPersist) &&
++		status.Role == raft.Follower && status.Term == 4 && status.VotedFor == "a" && status.AwaitingPersistence &&
++		state.Pending != nil && effectKindsEqual(state.Pending.Effects, raft.EffectResetElectionTimer, raft.EffectSend)
++	if baseline {
++		return
++	}
++	activated := effectKindsEqual(effects, raft.EffectPersist, raft.EffectSend) &&
++		status.Role == raft.Follower && status.Term == 4 && status.VotedFor == "a" && status.AwaitingPersistence &&
++		state.Pending != nil && effectKindsEqual(state.Pending.Effects, raft.EffectResetElectionTimer) &&
++		effects[1].Message.Type == raft.RequestVoteResponse && effects[1].Message.From == "b" && effects[1].Message.To == "a" &&
++		effects[1].Message.Term == 4 && effects[1].Message.VoteGranted
++	if !activated {
++		t.Fatalf("unexpected vote behavior effects=%+v status=%+v pending=%+v", effects, status, state.Pending)
++	}
++
++	leaderPersist, _ := acknowledge(t, a, step(t, a, raft.Input{Kind: raft.InputMessage, Message: effects[1].Message}))
++	leaderStatus := a.Status()
++	if leaderStatus.Role != raft.Leader || leaderStatus.AwaitingPersistence || !slices.Equal(leaderStatus.ElectionVotes, []raft.NodeID{"a", "b"}) {
++		t.Fatalf("leader status = %+v", leaderStatus)
++	}
++	violations := check.New(members).Observe(check.Observation{Members: members, Nodes: []check.NodeObservation{
++		{ID: "a", Up: true, Status: &leaderStatus, Durable: leaderPersist.State},
++		{ID: "b", Durable: raft.PersistentState{}},
++		{ID: "c", Durable: raft.PersistentState{}},
++	}})
++	failOnExactViolation(t, check.ElectionCertificate, violations, "vote response escaped before its durable write")
++}
++
++func TestMutantDuplicateVoteCount(t *testing.T) {
++	activate(t, duplicateVoteCountID)
++	members := []raft.NodeID{"a", "b", "c", "d", "e"}
++	a := newNode(t, raft.Config{ID: "a", Members: members}, raft.PersistentState{})
++	_, _ = acknowledge(t, a, step(t, a, raft.Input{Kind: raft.InputElectionTimeout}))
++	reply := raft.Message{Type: raft.RequestVoteResponse, From: "b", To: "a", Term: 1, VoteGranted: true}
++	if effects := step(t, a, raft.Input{Kind: raft.InputMessage, Message: reply}); len(effects) != 0 || a.Status().Role != raft.Candidate {
++		t.Fatalf("first response effects=%+v status=%+v", effects, a.Status())
++	}
++	effects := step(t, a, raft.Input{Kind: raft.InputMessage, Message: reply})
++	status := a.Status()
++	if len(effects) == 0 && status.Role == raft.Candidate && !status.AwaitingPersistence && slices.Equal(a.State().Votes, []raft.NodeID{"a", "b"}) {
++		return
++	}
++	if !effectKindsEqual(effects, raft.EffectPersist) || status.Role != raft.Leader || !status.AwaitingPersistence ||
++		!slices.Equal(status.ElectionVotes, []raft.NodeID{"a", "b"}) || len(effects[0].State.Log) != 1 || effects[0].State.Log[0].Type != raft.EntryNoop {
++		t.Fatalf("unexpected duplicate response behavior effects=%+v status=%+v state=%+v", effects, status, a.State())
++	}
++	leaderPersist, _ := acknowledge(t, a, effects)
++	leaderStatus := a.Status()
++	violations := check.New(members).Observe(check.Observation{Members: members, Nodes: []check.NodeObservation{
++		{ID: "a", Up: true, Status: &leaderStatus, Durable: leaderPersist.State},
++		{ID: "b", Durable: raft.PersistentState{HardState: raft.HardState{CurrentTerm: 1, VotedFor: "a"}}},
++		{ID: "c", Durable: raft.PersistentState{}},
++		{ID: "d", Durable: raft.PersistentState{}},
++		{ID: "e", Durable: raft.PersistentState{}},
++	}})
++	failOnExactViolation(t, check.ElectionCertificate, violations, "one durable peer vote was counted twice")
++}
++
++func TestMutantIgnoredHigherTerm(t *testing.T) {
++	activate(t, ignoredHigherTermID)
++	members := []raft.NodeID{"a", "b", "c"}
++	a := newNode(t, raft.Config{ID: "a", Members: members}, raft.PersistentState{})
++	electLeader(t, a, "b")
++	effects := step(t, a, raft.Input{Kind: raft.InputMessage, Message: raft.Message{
++		Type: raft.RequestVote, From: "c", To: "a", Term: 2, LastLogIndex: 1, LastLogTerm: 1,
++	}})
++	status := a.Status()
++	state := a.State()
++	baseline := effectKindsEqual(effects, raft.EffectPersist) && status.Role == raft.Follower && status.Term == 2 &&
++		status.VotedFor == "c" && status.AwaitingPersistence && state.Pending != nil &&
++		effectKindsEqual(state.Pending.Effects, raft.EffectResetElectionTimer, raft.EffectSend) &&
++		state.Pending.Effects[1].Message.Type == raft.RequestVoteResponse && state.Pending.Effects[1].Message.Term == 2 && state.Pending.Effects[1].Message.VoteGranted
++	if baseline {
++		return
++	}
++	activated := effectKindsEqual(effects, raft.EffectSend) && status.Role == raft.Leader && status.Term == 1 &&
++		status.VotedFor == "a" && !status.AwaitingPersistence && state.Pending == nil &&
++		effects[0].Message.Type == raft.RequestVoteResponse && effects[0].Message.From == "a" && effects[0].Message.To == "c" &&
++		effects[0].Message.Term == 1 && !effects[0].Message.VoteGranted
++	if !activated {
++		t.Fatalf("unexpected higher-term behavior effects=%+v status=%+v pending=%+v", effects, status, state.Pending)
++	}
++	failInvariant(t, "raft/higher-term-stepdown", "leader ignored a higher-term vote request")
++}
++
++func TestMutantStaleHeartbeatAcceptance(t *testing.T) {
++	activate(t, staleHeartbeatID)
++	members := []raft.NodeID{"a", "b", "c"}
++	b := newNode(t, raft.Config{ID: "b", Members: members}, raft.PersistentState{HardState: raft.HardState{CurrentTerm: 2}})
++	effects := step(t, b, raft.Input{Kind: raft.InputMessage, Message: raft.Message{
++		Type: raft.AppendEntries, From: "a", To: "b", Term: 1, Sequence: 7,
++	}})
++	status := b.Status()
++	baseline := effectKindsEqual(effects, raft.EffectSend) && status.Role == raft.Follower && status.Term == 2 &&
++		status.Leader == "" && !status.AwaitingPersistence && effects[0].Message.Type == raft.AppendEntriesResponse &&
++		effects[0].Message.Term == 2 && !effects[0].Message.Success && effects[0].Message.RejectHint == 1
++	if baseline {
++		return
++	}
++	activated := effectKindsEqual(effects, raft.EffectResetElectionTimer, raft.EffectSend) && status.Role == raft.Follower &&
++		status.Term == 2 && status.Leader == "" && !status.AwaitingPersistence && effects[1].Message.Type == raft.AppendEntriesResponse &&
++		effects[1].Message.Term == 2 && effects[1].Message.Success && effects[1].Message.MatchIndex == 0 && effects[1].Message.RejectHint == 0
++	if !activated {
++		t.Fatalf("unexpected stale-heartbeat behavior effects=%+v status=%+v", effects, status)
++	}
++	failInvariant(t, "raft/stale-heartbeat-rejection", "stale heartbeat reset the timer and received success")
++}
++
++func TestMutantSnapshotBeforePersistence(t *testing.T) {
++	activate(t, snapshotBeforePersistID)
++	members := []raft.NodeID{"a", "b", "c"}
++	b := newNode(t, raft.Config{ID: "b", Members: members}, raft.PersistentState{HardState: raft.HardState{CurrentTerm: 2}})
++	snapshot := raft.Snapshot{LastIncludedIndex: 5, LastIncludedTerm: 2, Members: members, Data: []byte("checkpoint")}
++	effects := step(t, b, raft.Input{Kind: raft.InputMessage, Message: raft.Message{
++		Type: raft.InstallSnapshot, From: "a", To: "b", Term: 2, Sequence: 9, Snapshot: snapshot,
++	}})
++	status := b.Status()
++	state := b.State()
++	baseline := effectKindsEqual(effects, raft.EffectPersist) && status.Term == 2 && status.CommitIndex == 5 && status.AwaitingPersistence &&
++		state.Pending != nil && effectKindsEqual(state.Pending.Effects, raft.EffectResetElectionTimer, raft.EffectInstallSnapshot, raft.EffectSend)
++	if baseline {
++		return
++	}
++	activated := effectKindsEqual(effects, raft.EffectPersist, raft.EffectInstallSnapshot) && status.Term == 2 &&
++		status.CommitIndex == 5 && status.AwaitingPersistence && effects[1].Snapshot.LastIncludedIndex == 5 &&
++		state.Pending != nil && effectKindsEqual(state.Pending.Effects, raft.EffectResetElectionTimer, raft.EffectSend) &&
++		state.Pending.Effects[1].Message.Type == raft.InstallSnapshotResponse && state.Pending.Effects[1].Message.Success
++	if !activated {
++		t.Fatalf("unexpected snapshot behavior effects=%+v status=%+v pending=%+v", effects, status, state.Pending)
++	}
++	failInvariant(t, "raft/snapshot-persistence-order", "snapshot installation escaped before durable persistence")
++}
++
++func TestMutantUnsafeOneStepReconfiguration(t *testing.T) {
++	activate(t, unsafeReconfigurationID)
++	members := []raft.NodeID{"a", "b", "c", "d"}
++	initial := raft.StableMembership([]raft.NodeID{"a", "b", "c"}, []raft.NodeID{"d"})
++	target := raft.StableMembership([]raft.NodeID{"b", "c", "d"}, []raft.NodeID{"a"})
++	wantJoint := raft.Membership{Voters: target.Voters, VotersOutgoing: initial.Voters, LearnersNext: target.Learners}
++	a := newNode(t, raft.Config{ID: "a", Members: members, Voters: initial.Voters, Learners: initial.Learners}, raft.PersistentState{})
++	electLeader(t, a, "b")
++	effects := step(t, a, raft.Input{Kind: raft.InputBeginMembership, Voters: target.Voters, Learners: target.Learners})
++	status := a.Status()
++	if !effectKindsEqual(effects, raft.EffectPersist) || !status.AwaitingPersistence || len(effects[0].State.Log) != 2 {
++		t.Fatalf("unexpected membership effects=%+v status=%+v", effects, status)
++	}
++	entry := effects[0].State.Log[1]
++	if entry.Type == raft.EntryConfigJoint && raft.MembershipsEqual(entry.Membership, wantJoint) {
++		return
++	}
++	if entry.Type != raft.EntryConfigFinal || entry.Membership.Joint() || !raft.MembershipsEqual(entry.Membership, target) {
++		t.Fatalf("unexpected membership entry=%+v status=%+v", entry, status)
++	}
++	violations := check.NewWithMembership(members, initial).Observe(check.Observation{Members: members, Nodes: []check.NodeObservation{
++		{ID: "a", Durable: effects[0].State},
++		{ID: "b", Durable: raft.PersistentState{}},
++		{ID: "c", Durable: raft.PersistentState{}},
++		{ID: "d", Durable: raft.PersistentState{}},
++	}})
++	failOnExactViolation(t, check.MembershipTransition, violations, "stable membership was replaced without a joint phase")
++}
++
++func newNode(t *testing.T, config raft.Config, state raft.PersistentState) *raft.Node {
++	t.Helper()
++	node, err := raft.New(config, state)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return node
++}
++
++func step(t *testing.T, node *raft.Node, input raft.Input) []raft.Effect {
++	t.Helper()
++	effects, err := node.Step(input)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return effects
++}
++
++func acknowledge(t *testing.T, node *raft.Node, effects []raft.Effect) (raft.Effect, []raft.Effect) {
++	t.Helper()
++	if !effectKindsEqual(effects, raft.EffectPersist) || effects[0].WriteToken == 0 {
++		t.Fatalf("effects before persistence = %+v", effects)
++	}
++	after := step(t, node, raft.Input{Kind: raft.InputPersisted, WriteToken: effects[0].WriteToken})
++	return effects[0], after
++}
++
++func electLeader(t *testing.T, node *raft.Node, voter raft.NodeID) raft.Effect {
++	t.Helper()
++	_, _ = acknowledge(t, node, step(t, node, raft.Input{Kind: raft.InputElectionTimeout}))
++	term := node.Status().Term
++	persist, _ := acknowledge(t, node, step(t, node, raft.Input{Kind: raft.InputMessage, Message: raft.Message{
++		Type: raft.RequestVoteResponse, From: voter, To: node.Status().ID, Term: term, VoteGranted: true,
++	}}))
++	if status := node.Status(); status.Role != raft.Leader || status.AwaitingPersistence {
++		t.Fatalf("leader status = %+v", status)
++	}
++	return persist
++}
++
++func findMessage(t *testing.T, effects []raft.Effect, kind raft.MessageType, to raft.NodeID) raft.Message {
++	t.Helper()
++	for _, effect := range effects {
++		if effect.Kind == raft.EffectSend && effect.Message.Type == kind && effect.Message.To == to {
++			return raft.CloneMessage(effect.Message)
++		}
++	}
++	t.Fatalf("message %s to %q not found in %+v", kind, to, effects)
++	return raft.Message{}
++}
++
++func effectKindsEqual(effects []raft.Effect, want ...raft.EffectKind) bool {
++	if len(effects) != len(want) {
++		return false
++	}
++	for index, effect := range effects {
++		if effect.Kind != want[index] {
++			return false
++		}
++	}
++	return true
++}
++
++func activate(t *testing.T, id string) {
++	t.Helper()
++	t.Log("DRAFT_MUTANT_ACTIVATED:" + id)
++}
++
++func failOnExactViolation(t *testing.T, invariant string, violations []check.Violation, detail string) {
++	t.Helper()
++	if len(violations) != 1 || violations[0].ID != invariant {
++		t.Fatalf("unexpected checker violations = %+v", violations)
++	}
++	failInvariant(t, invariant, detail)
++}
++
++func failInvariant(t *testing.T, invariant, detail string) {
++	t.Helper()
++	t.Log("DRAFT_MUTANT_INVARIANT:" + invariant)
++	t.Fatal(detail)
++}
+

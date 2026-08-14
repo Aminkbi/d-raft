@@ -4,3 +4,4 @@
 coverage.*
 cpu.prof
 mem.prof
+.research-bin/
