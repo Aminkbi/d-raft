@@ -3,23 +3,27 @@
 package raftsim
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
 	"github.com/aminkbi/d-raft/check"
+	"github.com/aminkbi/d-raft/decision"
 	"github.com/aminkbi/d-raft/raft"
 )
 
 var (
-	ErrInvalidConfig = errors.New("raftsim: invalid configuration")
-	ErrUnknownNode   = errors.New("raftsim: unknown node")
-	ErrNodeDown      = errors.New("raftsim: node is down")
-	ErrNodeUp        = errors.New("raftsim: node is already up")
-	ErrNoLeader      = errors.New("raftsim: cluster has no unique leader")
-	ErrApplyOrder    = errors.New("raftsim: applied entry is out of order")
+	ErrInvalidConfig     = errors.New("raftsim: invalid configuration")
+	ErrUnknownNode       = errors.New("raftsim: unknown node")
+	ErrNodeDown          = errors.New("raftsim: node is down")
+	ErrNodeUp            = errors.New("raftsim: node is already up")
+	ErrNoLeader          = errors.New("raftsim: cluster has no unique leader")
+	ErrApplyOrder        = errors.New("raftsim: applied entry is out of order")
+	ErrTransportIdentity = errors.New("raftsim: transport identity mismatch")
 )
 
 // Config defines a fixed-membership deterministic Raft cluster.
@@ -33,6 +37,21 @@ type Config struct {
 	StorageLatency     time.Duration
 	Trace              sim.TraceSink
 	StopOnViolation    bool
+	Decider            decision.Decider
+}
+
+// Envelope carries harness-owned causal identity separately from a pure Raft
+// protocol message. Packet.From and Packet.To remain the authoritative
+// transport endpoints and are validated at delivery.
+type Envelope struct {
+	SenderIncarnation uint64       `json:"sender_incarnation"`
+	SendSequence      uint64       `json:"send_sequence"`
+	Message           raft.Message `json:"message"`
+}
+
+func cloneEnvelope(envelope Envelope) Envelope {
+	envelope.Message = raft.CloneMessage(envelope.Message)
+	return envelope
 }
 
 // DefaultConfig returns a useful low-latency configuration for members.
@@ -123,6 +142,7 @@ type process struct {
 	persistAckEvent     sim.EventID
 	persistGeneration   uint64
 	crashAfterPersist   bool
+	sendSequence        uint64
 }
 
 // Cluster owns a deterministic reference Raft execution.
@@ -130,7 +150,7 @@ type Cluster struct {
 	config     Config
 	members    []raft.NodeID
 	simulator  *sim.Simulator
-	router     *sim.Router[raft.Message]
+	router     *sim.Router[Envelope]
 	processes  map[raft.NodeID]*process
 	checker    *check.Checker
 	violations []check.Violation
@@ -148,15 +168,20 @@ func New(config Config) (*Cluster, error) {
 	rootRandom := sim.NewRand(config.Seed)
 	if config.Trace != nil {
 		simulator.SetTraceSink(config.Trace)
-		rootRandom.SetTraceSink(config.Trace, "cluster")
+		if config.Decider == nil {
+			rootRandom.SetTraceSink(config.Trace, "cluster")
+		}
 	}
 	networkRandom := rootRandom.Split()
-	router, err := sim.NewRouter(simulator, networkRandom, config.Network, raft.CloneMessage)
+	router, err := sim.NewRouter(simulator, networkRandom, config.Network, cloneEnvelope)
 	if err != nil {
 		return nil, err
 	}
 	if config.Trace != nil {
 		router.SetTraceSink(config.Trace)
+	}
+	if config.Decider != nil {
+		router.SetDecisionSource(raftNetworkDecisions{decider: config.Decider})
 	}
 	cluster := &Cluster{
 		config:    config,
@@ -171,8 +196,8 @@ func New(config Config) (*Cluster, error) {
 	}
 	for _, id := range members {
 		id := id
-		if err := router.Register(sim.NodeID(id), func(packet sim.Packet[raft.Message]) {
-			cluster.receive(id, packet.Message)
+		if err := router.Register(sim.NodeID(id), func(packet sim.Packet[Envelope]) {
+			cluster.receive(id, packet)
 		}); err != nil {
 			return nil, err
 		}
@@ -192,7 +217,7 @@ func (c *Cluster) Simulator() *sim.Simulator {
 }
 
 // Router returns the cluster's deterministic network.
-func (c *Cluster) Router() *sim.Router[raft.Message] {
+func (c *Cluster) Router() *sim.Router[Envelope] {
 	return c.router
 }
 
@@ -353,6 +378,7 @@ func (c *Cluster) Crash(id raft.NodeID) error {
 	process.node = nil
 	process.mailbox = nil
 	process.crashAfterPersist = false
+	process.sendSequence = 0
 	c.cancelProcessEvents(process)
 	c.trace(id, sim.TraceProcessLifecycle, "crashed", map[string]any{"incarnation": process.incarnation})
 	c.observe()
@@ -443,7 +469,13 @@ func (c *Cluster) start(id raft.NodeID) error {
 	return c.processEffects(id, node.Start())
 }
 
-func (c *Cluster) receive(id raft.NodeID, message raft.Message) {
+func (c *Cluster) receive(id raft.NodeID, packet sim.Packet[Envelope]) {
+	envelope := packet.Message
+	message := envelope.Message
+	if envelope.SenderIncarnation == 0 || envelope.SendSequence == 0 || packet.From != sim.NodeID(message.From) || packet.To != sim.NodeID(message.To) || message.To != id {
+		c.fail(fmt.Errorf("%w: packet=%s->%s message=%s->%s", ErrTransportIdentity, packet.From, packet.To, message.From, message.To))
+		return
+	}
 	process := c.processes[id]
 	if !process.up {
 		c.trace(id, sim.TraceProtocolDrop, "process_down", message)
@@ -495,7 +527,17 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 			incarnation := process.incarnation
 			state := raft.ClonePersistentState(effect.State)
 			token := effect.WriteToken
-			eventID, err := c.simulator.Schedule(c.config.StorageLatency, func(*sim.Simulator) {
+			delay, err := c.chooseDuration(
+				fmt.Sprintf("storage/%s/%d/%d", id, incarnation, generation),
+				decision.StorageLatency,
+				c.config.StorageLatency,
+				c.config.StorageLatency,
+				map[string]any{"node": id, "incarnation": incarnation, "generation": generation, "token": token},
+			)
+			if err != nil {
+				return err
+			}
+			eventID, err := c.simulator.Schedule(delay, func(*sim.Simulator) {
 				if !process.up || process.incarnation != incarnation || process.persistGeneration != generation {
 					return
 				}
@@ -535,9 +577,12 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 				return err
 			}
 			process.persistEvent = eventID
-			c.trace(id, sim.TracePersistence, "scheduled", map[string]any{"token": token, "completion_at_ns": int64(c.simulator.Now() + c.config.StorageLatency)})
+			c.trace(id, sim.TracePersistence, "scheduled", map[string]any{"token": token, "completion_at_ns": int64(c.simulator.Now() + delay)})
 		case raft.EffectSend:
-			if _, err := c.router.Send(sim.NodeID(id), sim.NodeID(effect.Message.To), raft.CloneMessage(effect.Message)); err != nil {
+			process.sendSequence++
+			message := raft.CloneMessage(effect.Message)
+			envelope := Envelope{SenderIncarnation: process.incarnation, SendSequence: process.sendSequence, Message: message}
+			if _, err := c.router.Send(sim.NodeID(id), sim.NodeID(message.To), envelope); err != nil {
 				return err
 			}
 		case raft.EffectResetElectionTimer:
@@ -583,7 +628,22 @@ func (c *Cluster) resetElectionTimer(id raft.NodeID) error {
 	process.electionGeneration++
 	generation := process.electionGeneration
 	incarnation := process.incarnation
-	delay := process.random.Duration(c.config.ElectionTimeoutMin, c.config.ElectionTimeoutMax)
+	var delay time.Duration
+	if c.config.Decider == nil {
+		delay = process.random.Duration(c.config.ElectionTimeoutMin, c.config.ElectionTimeoutMax)
+	} else {
+		var err error
+		delay, err = c.chooseDuration(
+			fmt.Sprintf("timer/%s/%d/election/%d", id, incarnation, generation),
+			decision.ElectionTimeout,
+			c.config.ElectionTimeoutMin,
+			c.config.ElectionTimeoutMax,
+			map[string]any{"node": id, "incarnation": incarnation, "generation": generation},
+		)
+		if err != nil {
+			return err
+		}
+	}
 	eventID, err := c.simulator.Schedule(delay, func(*sim.Simulator) {
 		if !process.up || process.incarnation != incarnation || process.electionGeneration != generation || process.node.Status().Role == raft.Leader {
 			return
@@ -712,6 +772,109 @@ func (c *Cluster) observe() {
 	if c.config.StopOnViolation && len(violations) > 0 {
 		c.fail(violations[0])
 	}
+}
+
+func (c *Cluster) chooseDuration(id string, kind decision.Kind, minimum, maximum time.Duration, context any) (time.Duration, error) {
+	if c.config.Decider == nil {
+		return minimum, nil
+	}
+	minNS, maxNS := int64(minimum), int64(maximum)
+	contextJSON, err := json.Marshal(context)
+	if err != nil {
+		return 0, err
+	}
+	choice := decision.Choice{ID: id, Kind: kind, Min: &minNS, Max: &maxNS, Context: contextJSON}
+	selection, err := c.config.Decider.Choose(choice)
+	if err != nil {
+		return 0, err
+	}
+	if err := decision.ValidateSelection(choice, selection); err != nil {
+		return 0, fmt.Errorf("raftsim: duration choice %q: %w", id, err)
+	}
+	return time.Duration(*selection.Number), nil
+}
+
+type raftNetworkDecisions struct {
+	decider decision.Decider
+}
+
+type networkDecisionContext struct {
+	From              sim.NodeID   `json:"from"`
+	To                sim.NodeID   `json:"to"`
+	SenderIncarnation uint64       `json:"sender_incarnation"`
+	SendSequence      uint64       `json:"send_sequence"`
+	Message           raft.Message `json:"message"`
+	MinLatencyNS      int64        `json:"min_latency_ns"`
+	MaxLatencyNS      int64        `json:"max_latency_ns"`
+	LossProbability   float64      `json:"loss_probability"`
+}
+
+func semanticNetworkContext(packet sim.Packet[Envelope], link sim.LinkConfig) networkDecisionContext {
+	return networkDecisionContext{
+		From: packet.From, To: packet.To,
+		SenderIncarnation: packet.Message.SenderIncarnation,
+		SendSequence:      packet.Message.SendSequence,
+		Message:           raft.CloneMessage(packet.Message.Message),
+		MinLatencyNS:      int64(link.MinLatency), MaxLatencyNS: int64(link.MaxLatency),
+		LossProbability: link.LossProbability,
+	}
+}
+
+func (d raftNetworkDecisions) Drop(packet sim.Packet[Envelope], link sim.LinkConfig) (bool, error) {
+	options := lossOptions(link.LossProbability)
+	context, err := json.Marshal(semanticNetworkContext(packet, link))
+	if err != nil {
+		return false, err
+	}
+	choice := decision.Choice{
+		ID:      fmt.Sprintf("network/%s/%d/%d/loss", packet.From, packet.Message.SenderIncarnation, packet.Message.SendSequence),
+		Kind:    decision.NetworkLoss,
+		Options: options,
+		Context: context,
+	}
+	selection, err := d.decider.Choose(choice)
+	if err != nil {
+		return false, err
+	}
+	if err := decision.ValidateSelection(choice, selection); err != nil {
+		return false, fmt.Errorf("raftsim: network loss choice: %w", err)
+	}
+	return selection.Option == "drop", nil
+}
+
+func (d raftNetworkDecisions) Latency(packet sim.Packet[Envelope], link sim.LinkConfig) (time.Duration, error) {
+	minimum, maximum := int64(link.MinLatency), int64(link.MaxLatency)
+	context, err := json.Marshal(semanticNetworkContext(packet, link))
+	if err != nil {
+		return 0, err
+	}
+	choice := decision.Choice{
+		ID:      fmt.Sprintf("network/%s/%d/%d/latency", packet.From, packet.Message.SenderIncarnation, packet.Message.SendSequence),
+		Kind:    decision.NetworkLatency,
+		Min:     &minimum,
+		Max:     &maximum,
+		Context: context,
+	}
+	selection, err := d.decider.Choose(choice)
+	if err != nil {
+		return 0, err
+	}
+	if err := decision.ValidateSelection(choice, selection); err != nil {
+		return 0, fmt.Errorf("raftsim: network latency choice: %w", err)
+	}
+	return time.Duration(*selection.Number), nil
+}
+
+func lossOptions(probability float64) []decision.Option {
+	if probability <= 0 {
+		return []decision.Option{{ID: "deliver", Weight: 1}}
+	}
+	if probability >= 1 {
+		return []decision.Option{{ID: "drop", Weight: 1}}
+	}
+	const scale = uint64(1) << 53
+	dropWeight := uint64(math.Ceil(probability * float64(scale)))
+	return []decision.Option{{ID: "drop", Weight: dropWeight}, {ID: "deliver", Weight: scale - dropWeight}}
 }
 
 func inputAction(input raft.Input) string {

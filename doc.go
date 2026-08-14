@@ -8,6 +8,7 @@
 // latency, loss, endpoint lifecycle, and directed partitions.
 //
 // Components can write their transitions to a shared JSONLRecorder. The
-// resulting versioned JSON Lines stream gives scheduler, random, and network
-// activity one global order suitable for diagnostics and future replay tools.
+// resulting versioned JSON Lines stream gives scheduler, random, network, and
+// protocol activity one global observational order. Exact execution replay is
+// driven separately by the semantic choices in package decision.
 package sim

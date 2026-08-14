@@ -262,6 +262,61 @@ func TestRouterRejectsVirtualTimeOverflow(t *testing.T) {
 	}
 }
 
+func TestRouterUsesSemanticNetworkDecisions(t *testing.T) {
+	t.Parallel()
+
+	simulator := New()
+	source := &testNetworkDecisions{latency: 7 * time.Millisecond}
+	router := mustRouter[string](t, simulator, NewRand(0), LinkConfig{
+		MinLatency:      5 * time.Millisecond,
+		MaxLatency:      10 * time.Millisecond,
+		LossProbability: 0.5,
+	}, nil)
+	router.SetDecisionSource(source)
+	register(t, router, "a", func(Packet[string]) {})
+	var received string
+	register(t, router, "b", func(packet Packet[string]) { received = packet.Message })
+	result, err := router.Send("a", "b", "semantic")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if result.DeliveryAt != 7*time.Millisecond || source.packet.Message != "semantic" {
+		t.Fatalf("result=%+v source packet=%+v", result, source.packet)
+	}
+	simulator.Run()
+	if received != "semantic" {
+		t.Fatalf("received = %q", received)
+	}
+}
+
+func TestRouterRejectsImpossibleNetworkDecision(t *testing.T) {
+	t.Parallel()
+
+	simulator := New()
+	router := mustRouter[string](t, simulator, NewRand(0), LinkConfig{}, nil)
+	router.SetDecisionSource(&testNetworkDecisions{drop: true})
+	register(t, router, "a", func(Packet[string]) {})
+	register(t, router, "b", func(Packet[string]) {})
+	if _, err := router.Send("a", "b", "impossible"); !errors.Is(err, ErrInvalidNetworkDecision) {
+		t.Fatalf("Send error = %v", err)
+	}
+}
+
+type testNetworkDecisions struct {
+	packet  Packet[string]
+	drop    bool
+	latency time.Duration
+}
+
+func (d *testNetworkDecisions) Drop(packet Packet[string], _ LinkConfig) (bool, error) {
+	d.packet = packet
+	return d.drop, nil
+}
+
+func (d *testNetworkDecisions) Latency(_ Packet[string], _ LinkConfig) (time.Duration, error) {
+	return d.latency, nil
+}
+
 func mustRouter[M any](t *testing.T, simulator *Simulator, random *Rand, config LinkConfig, clone CloneFunc[M]) *Router[M] {
 	t.Helper()
 	router, err := NewRouter(simulator, random, config, clone)

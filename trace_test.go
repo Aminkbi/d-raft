@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"testing"
 	"time"
 )
@@ -122,6 +124,9 @@ func TestJSONLRecorderReportsUnsupportedMessage(t *testing.T) {
 	if recorder.Err() == nil {
 		t.Fatal("recorder accepted a channel message")
 	}
+	if output.Len() != 0 {
+		t.Fatalf("encoding failure wrote %d bytes", output.Len())
+	}
 }
 
 func TestJSONLRecorderRejectsNilWriter(t *testing.T) {
@@ -132,6 +137,22 @@ func TestJSONLRecorderRejectsNilWriter(t *testing.T) {
 	if recorder.Err() == nil {
 		t.Fatal("recorder accepted a nil writer")
 	}
+}
+
+func TestJSONLRecorderReportsShortWrite(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewJSONLRecorder(shortWriter{})
+	recorder.RecordTrace(TraceEvent{Kind: TraceClockAdvanced})
+	if !errors.Is(recorder.Err(), io.ErrShortWrite) {
+		t.Fatalf("short write error = %v", recorder.Err())
+	}
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(data []byte) (int, error) {
+	return len(data) / 2, nil
 }
 
 func decodeTraceRecords(t *testing.T, data []byte) []TraceRecord {

@@ -108,9 +108,9 @@ func (f TraceFunc) RecordTrace(event TraceEvent) {
 // synchronous and is not safe for concurrent use. After the first encoding
 // error it records no further events; Err reports that error.
 type JSONLRecorder struct {
-	encoder *json.Encoder
-	next    uint64
-	err     error
+	writer io.Writer
+	next   uint64
+	err    error
 }
 
 // NewJSONLRecorder returns a recorder that writes to writer.
@@ -118,7 +118,7 @@ func NewJSONLRecorder(writer io.Writer) *JSONLRecorder {
 	if writer == nil {
 		return &JSONLRecorder{err: fmt.Errorf("sim: JSONLRecorder requires a writer")}
 	}
-	return &JSONLRecorder{encoder: json.NewEncoder(writer), next: 1}
+	return &JSONLRecorder{writer: writer, next: 1}
 }
 
 // RecordTrace implements TraceSink.
@@ -126,8 +126,12 @@ func (r *JSONLRecorder) RecordTrace(event TraceEvent) {
 	if r.err != nil {
 		return
 	}
-	if r.encoder == nil {
+	if r.writer == nil {
 		r.err = fmt.Errorf("sim: JSONLRecorder has no writer")
+		return
+	}
+	if r.next == 0 {
+		r.err = fmt.Errorf("sim: JSONLRecorder sequence space exhausted")
 		return
 	}
 	record := TraceRecord{
@@ -135,8 +139,19 @@ func (r *JSONLRecorder) RecordTrace(event TraceEvent) {
 		Sequence:   r.next,
 		TraceEvent: event,
 	}
-	if err := r.encoder.Encode(record); err != nil {
+	encoded, err := json.Marshal(record)
+	if err != nil {
 		r.err = err
+		return
+	}
+	encoded = append(encoded, '\n')
+	written, err := r.writer.Write(encoded)
+	if err != nil {
+		r.err = err
+		return
+	}
+	if written != len(encoded) {
+		r.err = io.ErrShortWrite
 		return
 	}
 	r.next++

@@ -1,76 +1,149 @@
 # Research direction
 
-d-raft is investigating whether deterministic simulation can turn failures in
-consensus protocols into small, portable, and understandable engineering
-artifacts. Raft is the first target because its safety properties are precise,
-its failure modes are operationally important, and several mature Go
+d-raft investigates whether a distributed-systems failure can be represented
+as a small semantic artifact that remains useful outside the simulator that
+found it. Raft is the first target because its safety properties are precise,
+its persistence boundaries are operationally important, and mature independent
 implementations are available for comparison.
 
 ## Working thesis
 
-Given a consensus failure discovered by randomized or systematic simulation,
-d-raft should produce a versioned execution trace that can be replayed,
-automatically minimized, and explained in terms of a violated protocol
-invariant.
+Given a Raft safety failure found by randomized or systematic execution,
+d-raft should produce a versioned counterexample that is:
 
-The current repository establishes the deterministic scheduler, stable random
-streams, faultable network, and ordered trace schema needed to test that
-thesis. It does not claim that deterministic simulation alone proves protocol
-correctness.
+- replayable without depending on incidental random-number consumption;
+- minimized in terms of semantic choices rather than raw log lines;
+- independently checkable from a structured invariant witness; and
+- portable across supported implementations and versions through adapters.
+
+The intended research contribution is the combination of portability,
+semantic reduction, explicit evidence, and cross-implementation replay. The
+project does **not** claim novelty for deterministic simulation, a pure
+state-machine interface, seed replay, trace minimization, or implementation
+trace validation in isolation.
+
+## Current foundation
+
+The repository currently contains:
+
+1. A protocol-neutral, single-threaded discrete-event runtime with stable
+   random streams, virtual time, network faults, and ordered observations.
+2. A pure Raft reference state machine implementing elections, heartbeats, log
+   replication, current-term commit, and leader no-op entries.
+3. A cluster harness with durable stores, explicit persistence acknowledgement,
+   input barriers, partitions, process incarnations, and crash/restart.
+4. An independent checker for election safety, certificates, durable votes,
+   term monotonicity, log matching, leader completeness, and committed/applied
+   conflicts.
+5. A semantic decision schema with seeded recording, exact tape replay, stable
+   causal identities, and domain-drift rejection.
+6. A bounded, payload-lossless decoder for the known fields of the separate
+   observational trace schema.
+
+The reference model is a fixture and oracle for experiments, not itself the
+claimed research novelty.
 
 ## Research questions
 
-1. How reliably can a discovered failure be reproduced across machines and
-   supported Go toolchains?
-2. How many distinct failures does guided schedule exploration find compared
-   with ordinary seeded randomized testing under an equal compute budget?
-3. How much can a failing execution be reduced while preserving its violated
-   invariant?
-4. Does a minimized semantic trace reduce the time required to diagnose a
-   consensus defect?
-5. Can one harness drive both a reference model and production-grade Raft
-   implementations without weakening the fault model?
+1. How reliably do semantic counterexamples replay across machines, supported
+   Go toolchains, implementation versions, and independent Raft adapters?
+2. Under equal transition and wall-clock budgets, how do randomized and bounded
+   systematic search compare in time to first failure and distinct failures?
+3. How much do semantic, dependency-aware reduction and generic delta debugging
+   reduce a failing execution while preserving the same violation fingerprint?
+4. Does a minimized counterexample with a structured witness reduce diagnosis
+   time compared with a seed and an unminimized event trace?
+5. Which choices form a portable core across implementations with different
+   batching, ticking, pre-vote, and storage APIs?
 
-## Planned experimental artifact
-
-The intended end-to-end workflow is:
+## Artifact pipeline
 
 ```text
-scenario -> explore -> detect invariant violation -> save trace
-         -> replay -> minimize -> explain -> regression corpus
+versioned scenario
+  -> random or bounded systematic execution
+  -> independent invariant witness
+  -> self-describing run artifact
+  -> exact replay
+  -> fingerprint-preserving semantic minimization
+  -> adapter replay
+  -> regression corpus
 ```
 
-The next milestones are:
+Every artifact should include scenario and adapter identifiers and versions,
+membership and timing configuration, root seed, repository revision, Go
+version, decision schema and tape, outcome, observation digest, and any
+violation witness.
 
-1. A pure election-only Raft state machine with explicit inputs and effects.
-2. Safety and bounded-liveness invariant checks.
-3. Trace-driven replay independent of random-stream consumption.
-4. Delta-debugging of messages, faults, timers, and client operations.
-5. State hashing and bounded systematic schedule exploration.
-6. An adapter for at least one established Go Raft implementation.
-7. A public corpus of minimized failures and reproducibility packages.
+## Implementation roadmap
 
-## Evaluation and reporting
+- [x] Deterministic virtual-time runtime and faultable network
+- [x] Pure durable Raft elections and log replication
+- [x] Independent safety checker and structured fingerprints
+- [x] Semantic decision recording and exact replay
+- [x] Payload-lossless observational trace decoding
+- [ ] Versioned, self-describing run artifacts and `run`/`replay`/`inspect` CLI
+- [ ] Prefix replay and bounded depth-first choice exploration
+- [ ] Fingerprint-preserving semantic delta debugging and domain shrinkers
+- [ ] Snapshot installation and safe log compaction
+- [ ] Joint-consensus membership changes and learners
+- [ ] Production Raft adapter with declared capability boundaries
+- [ ] Chain-of-Blocks state-machine oracle and seeded mutant corpus
+- [ ] Comparative evaluation, public counterexample corpus, and archival release
 
-Experiments should report the repository commit, Go version, hardware, search
-budget, cluster size, scenario, fault policy, seed, trace schema, invariant,
-and raw/minimized trace sizes. When performance is compared, benchmarks should
-include repeated trials and uncertainty rather than only a single throughput
-number.
+## Evaluation design
 
-Useful measurements include executions per second, unique abstract states,
-time to first failure, distinct invariant violations, replay success rate,
-trace reduction ratio, and diagnosis time in a small user study.
+Experiments will report the repository commit, Go version, hardware, search
+budget, cluster size, scenario and adapter versions, fault policy, seed,
+decision schema, invariant, and raw/minimized artifact sizes. Performance
+comparisons require repeated trials and uncertainty intervals.
+
+Primary measurements are executions and transitions per second, explored
+prefixes and unique canonical states, time to first failure, distinct violation
+fingerprints, replay success rate, cross-adapter replay rate, reduction ratio,
+reduction cost, and mutant kill rate.
+
+Planned baselines include:
+
+- seed-only randomized replay;
+- ordinary delta debugging over a flat stimulus list;
+- a DEMi-inspired distributed-trace reduction strategy; and
+- random search versus bounded prefix exploration under equal budgets.
+
+Diagnosis-time claims require a preregistered small user study or should remain
+clearly labeled qualitative.
+
+## Prior art
+
+The design and evaluation must compare against, and avoid overstating novelty
+relative to:
+
+- [etcd/raft](https://github.com/etcd-io/raft), including its deterministic core
+  and [TLA+ trace validation](https://github.com/etcd-io/raft/tree/main/tla);
+- [FoundationDB deterministic simulation](https://apple.github.io/foundationdb/testing.html);
+- [DEMi (NSDI 2016)](https://www.usenix.org/conference/nsdi16/technical-sessions/presentation/scott);
+- [MadRaft/MadSim](https://github.com/madsim-rs/madraft);
+- systematic and interactive systems such as SAMC, Oddity, Coyote, Turmoil,
+  and VOPR; and
+- Antithesis, including its published
+  [Raft findings](https://antithesis.com/blog/2026/finding-bugs-in-raft-implementations/).
+
+A formal related-work matrix and pinned citations will accompany the evaluation
+artifact.
 
 ## Threats to validity
 
-- A single-threaded simulator cannot expose implementation data races.
-- A virtual network and storage model omit some kernel, filesystem, and
-  hardware behaviors.
-- Bounded exploration cannot establish unbounded liveness.
-- State hashing may merge executions that differ in a behaviorally important
-  way if the abstraction is too coarse.
-- A reference Raft model can share mistakes with its invariants.
-- Results from one production adapter may not generalize to other designs.
+- The single-threaded simulator cannot expose production data races.
+- A virtual network and atomic storage model omit kernel, filesystem, torn-write,
+  corruption, and hardware behavior unless modeled explicitly.
+- Bounded exploration cannot establish unbounded safety or liveness.
+- A non-Markov-complete state abstraction can unsafely merge distinct futures;
+  early exploration must compare canonical state encodings as well as hashes.
+- Reference-model and checker defects can be correlated despite package
+  separation; mutants, independent adapters, and external validation mitigate
+  but do not eliminate this risk.
+- Cross-implementation semantics may be narrower than any one implementation's
+  feature set.
+- Results from one production adapter or one mutant corpus may not generalize.
 
-These limitations should remain explicit in papers, talks, and release notes.
+These limitations must remain explicit in papers, talks, release notes, and
+artifact documentation.

@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use d-raft in published work, please cite this software."
-title: "d-raft: Deterministic simulation infrastructure for consensus protocols"
+title: "d-raft: Portable semantic counterexamples for Raft"
 type: software
 authors:
   - given-names: Mohammadamin
@@ -11,10 +11,11 @@ repository-code: "https://github.com/aminkbi/d-raft"
 url: "https://github.com/aminkbi/d-raft"
 license: Apache-2.0
 abstract: >-
-  d-raft is a deterministic discrete-event simulation kernel for repeatable
-  testing and research on Raft and other distributed state machines. It
-  provides virtual time, stable random streams, a faultable typed network, and
-  a versioned machine-readable execution trace.
+  d-raft is a deterministic research platform for producing replayable and
+  independently checkable Raft executions. It provides a pure Raft reference
+  state machine, virtual time, explicit durable persistence barriers, a
+  faultable network, safety witnesses, semantic decision tapes, and versioned
+  observational traces.
 keywords:
   - Raft
   - consensus

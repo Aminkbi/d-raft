@@ -8,16 +8,17 @@ import (
 )
 
 var (
-	ErrNilSimulator    = errors.New("sim: router requires a simulator")
-	ErrNilRand         = errors.New("sim: router requires a random source")
-	ErrEmptyNode       = errors.New("sim: node identifier must not be empty")
-	ErrNilHandler      = errors.New("sim: node handler must not be nil")
-	ErrDuplicateNode   = errors.New("sim: node is already registered")
-	ErrUnknownSource   = errors.New("sim: packet source is not registered")
-	ErrUnknownTarget   = errors.New("sim: packet target is not registered")
-	ErrInvalidLink     = errors.New("sim: invalid network link configuration")
-	ErrInvalidMatrix   = errors.New("sim: invalid partition matrix")
-	ErrPacketExhausted = errors.New("sim: packet identifier space exhausted")
+	ErrNilSimulator           = errors.New("sim: router requires a simulator")
+	ErrNilRand                = errors.New("sim: router requires a random source")
+	ErrEmptyNode              = errors.New("sim: node identifier must not be empty")
+	ErrNilHandler             = errors.New("sim: node handler must not be nil")
+	ErrDuplicateNode          = errors.New("sim: node is already registered")
+	ErrUnknownSource          = errors.New("sim: packet source is not registered")
+	ErrUnknownTarget          = errors.New("sim: packet target is not registered")
+	ErrInvalidLink            = errors.New("sim: invalid network link configuration")
+	ErrInvalidMatrix          = errors.New("sim: invalid partition matrix")
+	ErrPacketExhausted        = errors.New("sim: packet identifier space exhausted")
+	ErrInvalidNetworkDecision = errors.New("sim: invalid network decision")
 )
 
 // NodeID identifies a simulated network endpoint.
@@ -199,6 +200,13 @@ type SendResult struct {
 	DropReason DropReason
 }
 
+// NetworkDecisionSource replaces Router's random loss and latency draws with
+// semantic decisions suitable for recording, replay, and exploration.
+type NetworkDecisionSource[M any] interface {
+	Drop(Packet[M], LinkConfig) (bool, error)
+	Latency(Packet[M], LinkConfig) (time.Duration, error)
+}
+
 // Router is a deterministic, directed, in-memory network. It performs all
 // work through its Simulator and never starts goroutines.
 type Router[M any] struct {
@@ -213,6 +221,7 @@ type Router[M any] struct {
 	nextPacket  uint64
 	exhausted   bool
 	trace       TraceSink
+	decisions   NetworkDecisionSource[M]
 }
 
 // NewRouter constructs a router. Passing nil for clone uses ordinary Go
@@ -275,6 +284,12 @@ func (r *Router[M]) Unregister(node NodeID) bool {
 // source, and router to obtain one globally ordered execution trace.
 func (r *Router[M]) SetTraceSink(sink TraceSink) {
 	r.trace = sink
+}
+
+// SetDecisionSource replaces random network choices. Passing nil restores the
+// Router's Rand-based behavior.
+func (r *Router[M]) SetDecisionSource(source NetworkDecisionSource[M]) {
+	r.decisions = source
 }
 
 // SetObserver sets the lifecycle observer. Passing nil disables observation.
@@ -368,11 +383,36 @@ func (r *Router[M]) Send(from, to NodeID, message M) (SendResult, error) {
 	if !exists {
 		link = r.defaultLink
 	}
-	if r.rng.Chance(link.LossProbability) {
+	dropped := false
+	if r.decisions != nil {
+		var err error
+		dropped, err = r.decisions.Drop(packet, link)
+		if err != nil {
+			return SendResult{}, err
+		}
+		if (dropped && link.LossProbability == 0) || (!dropped && link.LossProbability == 1) {
+			return SendResult{}, fmt.Errorf("%w: loss decision conflicts with probability %g", ErrInvalidNetworkDecision, link.LossProbability)
+		}
+	} else {
+		dropped = r.rng.Chance(link.LossProbability)
+	}
+	if dropped {
 		return r.drop(packet, DropLoss, 0, false), nil
 	}
 
-	latency := r.rng.Duration(link.MinLatency, link.MaxLatency)
+	var latency time.Duration
+	if r.decisions != nil {
+		var err error
+		latency, err = r.decisions.Latency(packet, link)
+		if err != nil {
+			return SendResult{}, err
+		}
+		if latency < link.MinLatency || latency > link.MaxLatency {
+			return SendResult{}, fmt.Errorf("%w: latency %s outside [%s, %s]", ErrInvalidNetworkDecision, latency, link.MinLatency, link.MaxLatency)
+		}
+	} else {
+		latency = r.rng.Duration(link.MinLatency, link.MaxLatency)
+	}
 	var deliveryAt time.Duration
 	_, err := r.sim.Schedule(latency, func(_ *Simulator) {
 		r.deliver(packet, deliveryAt)

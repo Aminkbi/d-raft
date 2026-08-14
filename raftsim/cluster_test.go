@@ -2,11 +2,13 @@ package raftsim
 
 import (
 	"bytes"
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/decision"
 	"github.com/aminkbi/d-raft/raft"
 )
 
@@ -146,6 +148,88 @@ func TestClusterSeedReproducesStateAndTrace(t *testing.T) {
 	rightStatus, rightTrace := run()
 	if !statusesEqual(leftStatus, rightStatus) || !bytes.Equal(leftTrace, rightTrace) {
 		t.Fatal("equal seeds produced different cluster executions")
+	}
+}
+
+func TestDecisionTapeReplaysIndependentlyOfClusterSeed(t *testing.T) {
+	t.Parallel()
+
+	var originalTrace bytes.Buffer
+	recorder := decision.NewRecorder(decision.NewSeedDecider(12345))
+	config := testConfig("a", "b", "c")
+	config.Decider = recorder
+	config.Trace = sim.NewJSONLRecorder(&originalTrace)
+	original := mustCluster(t, config)
+	runUntil(t, original, 2*time.Second)
+	if err := recorder.Err(); err != nil {
+		t.Fatalf("record decisions: %v", err)
+	}
+
+	replay, err := decision.NewTapeDecider(recorder.Tape())
+	if err != nil {
+		t.Fatalf("NewTapeDecider: %v", err)
+	}
+	replayConfig := testConfig("a", "b", "c")
+	replayConfig.Seed = 999999 // Infrastructure RNG draws must not drive this run.
+	replayConfig.Decider = replay
+	var replayTrace bytes.Buffer
+	replayConfig.Trace = sim.NewJSONLRecorder(&replayTrace)
+	replayed := mustCluster(t, replayConfig)
+	runUntil(t, replayed, 2*time.Second)
+	if err := replay.Finish(); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if !statusesEqual(original.Statuses(), replayed.Statuses()) {
+		t.Fatalf("original=%+v replayed=%+v", original.Statuses(), replayed.Statuses())
+	}
+	if !bytes.Equal(originalTrace.Bytes(), replayTrace.Bytes()) {
+		t.Fatal("tape replay produced a different observational trace")
+	}
+	for _, id := range original.Members() {
+		left, _ := original.Store(id)
+		right, _ := replayed.Store(id)
+		if left.AppliedIndex != right.AppliedIndex || !entriesEqual(left.State.Log, right.State.Log) || !entriesEqual(left.Applied, right.Applied) {
+			t.Fatalf("node %q original=%+v replayed=%+v", id, left, right)
+		}
+	}
+}
+
+func TestNetworkDecisionContextExcludesIncidentalPacketState(t *testing.T) {
+	t.Parallel()
+
+	link := sim.LinkConfig{MinLatency: time.Millisecond, MaxLatency: 2 * time.Millisecond, LossProbability: 0.5}
+	envelope := Envelope{SenderIncarnation: 3, SendSequence: 7, Message: raft.Message{Type: raft.AppendEntries, From: "a", To: "b", Term: 4}}
+	first := sim.Packet[Envelope]{ID: 1, From: "a", To: "b", Message: envelope, SentAt: time.Second}
+	second := first
+	second.ID = 999
+	second.SentAt = 42 * time.Second
+
+	recorder := decision.NewRecorder(decision.NewSeedDecider(5))
+	if _, err := (raftNetworkDecisions{decider: recorder}).Drop(first, link); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := decision.NewTapeDecider(recorder.Tape())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (raftNetworkDecisions{decider: replay}).Drop(second, link); err != nil {
+		t.Fatalf("incidental packet state changed context: %v", err)
+	}
+	if err := replay.Finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClusterRejectsSpoofedTransportIdentity(t *testing.T) {
+	t.Parallel()
+
+	cluster := mustCluster(t, testConfig("a", "b", "c"))
+	_, err := cluster.Router().Send("a", "c", Envelope{Message: raft.Message{Type: raft.RequestVote, From: "b", To: "c", Term: 1}})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, err := cluster.RunUntil(10 * time.Millisecond); !errors.Is(err, ErrTransportIdentity) {
+		t.Fatalf("transport error = %v", err)
 	}
 }
 

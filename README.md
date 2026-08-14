@@ -4,160 +4,190 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/aminkbi/d-raft.svg)](https://pkg.go.dev/github.com/aminkbi/d-raft)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-d-raft is a deterministic discrete-event simulation kernel for repeatable
-tests of consensus protocols and other distributed state machines. It is the
-foundation of a larger deterministic Raft testing project; it does not yet
-implement the Raft protocol itself.
+**Deterministic Raft experiments with durable, replayable decisions.**
 
-The Go module is small, dependency-free, and deliberately uses no
-`time.Sleep`, timers, channels, or goroutines. It targets Go 1.26 with the
-latest patch toolchain declared in [`go.mod`](go.mod).
+d-raft is a research platform for turning distributed-systems failures into
+small, independently checkable execution artifacts. It combines a pure Raft
+reference state machine with virtual time, a faultable network, explicit
+persistence acknowledgements, crash/restart simulation, semantic decision
+recording, and independent safety checks.
 
-Created and maintained by
-[Mohammadamin Khanbabaei (aminkbi)](https://github.com/aminkbi).
+The project is created and maintained by
+[Mohammadamin Khanbabaei (`aminkbi`)](https://github.com/aminkbi).
 
-> **Research status:** the simulation kernel and trace schema are usable now.
-> The reference Raft state machine, replay engine, invariant checker, and trace
-> minimizer are planned work. See [RESEARCH.md](RESEARCH.md) for the research
-> questions and evaluation plan.
+> **Research status:** the deterministic kernel, durable reference Raft model,
+> cluster harness, safety checker, observational trace decoder, and exact
+> semantic decision replay are implemented. Run artifacts, exploration,
+> counterexample minimization, snapshots, joint consensus, and production
+> adapters remain active research work.
+
+## Why d-raft?
+
+A seed says how to repeat one pseudorandom run in one implementation. A useful
+counterexample should say *which semantic choices mattered*, retain evidence
+of the violated invariant, survive irrelevant changes in random-number
+consumption, and be portable to another implementation.
+
+d-raft's working research direction is therefore:
+
+> Portable, minimized, independently checkable semantic Raft
+> counterexamples that replay across implementations and versions.
+
+Deterministic simulation, pure `Step` APIs, seeded replay, and trace reduction
+all have substantial prior art. d-raft does not present those techniques alone
+as novel; [RESEARCH.md](RESEARCH.md) defines the narrower thesis and evaluation
+plan.
+
+## What works today
+
+| Package | Role |
+| --- | --- |
+| `sim` | Protocol-neutral virtual-time scheduler, stable RNG streams, typed network, partitions, and observational JSONL traces |
+| `raft` | Pure deterministic Raft reference state machine with elections, heartbeats, log replication, current-term commit, and leader no-op entries |
+| `raftsim` | Durable storage, timers, network delivery, partitions, crash/restart, process incarnations, and persistence barriers |
+| `check` | Independent election, voting, term, log, commit, and apply safety witnesses with stable fingerprints |
+| `decision` | Versioned semantic choices, seeded selection, recording, exact tape replay, and domain-drift detection |
+| `trace` | Bounded, line-aware, payload-lossless decoder for known `d-raft.trace/v1` fields |
+
+The root module is dependency-free and uses no wall-clock sleeps or background
+goroutines. It targets Go 1.26 and declares the current Go 1.26.6 toolchain.
 
 ## Architecture
 
 ```mermaid
-flowchart TD
-    Protocol["Protocol / state-machine callbacks"]
-    Router["Typed deterministic router"]
-    Scheduler["Virtual-time event scheduler"]
-    RNG["Stable SplitMix64 streams"]
-    Recorder["d-raft.trace/v1 recorder"]
+flowchart LR
+    Scenario[Scenario / faults / proposals]
+    Decisions[Semantic decider]
+    Harness[Durable Raft harness]
+    Model[Pure Raft model]
+    Runtime[Virtual time + network]
+    Checker[Independent checker]
+    Artifact[Decision tape + observations]
 
-    Protocol -->|send| Router
-    Router -->|schedule delivery| Scheduler
-    Scheduler -->|synchronous event| Protocol
-    RNG -->|loss and latency decisions| Router
-    Scheduler -. ordered events .-> Recorder
-    RNG -. semantic draws .-> Recorder
-    Router -. packets and topology .-> Recorder
+    Scenario --> Harness
+    Decisions --> Harness
+    Harness <--> Model
+    Harness <--> Runtime
+    Harness --> Checker
+    Decisions --> Artifact
+    Runtime --> Artifact
+    Checker --> Artifact
 ```
 
-The simulator owns time and ordering. Protocol callbacks are synchronous, the
-router turns sends into scheduled events, and independently split random
-streams prevent unrelated choices from shifting one another. Sharing one
-recorder preserves the exact cross-component observation order.
+The persistence boundary is explicit:
 
-## Deterministic contract
+```text
+Step(input)
+  -> Persist(token, state)
+  -> simulated durable completion
+  -> Step(Persisted(token))
+  -> dependent messages, timers, and apply effects
+```
 
-- Virtual time advances only when the simulator executes an event or
-  `RunUntil` explicitly advances it.
-- A binary min-heap orders events by time. Events at the same time run in FIFO
-  scheduling order, including events scheduled reentrantly by callbacks.
-- The built-in SplitMix64 wrapper has a stable, package-owned bit stream. A
-  `uint64` seed reproduces results across machines and Go releases.
-- The typed router supports directed per-link loss and inclusive nanosecond
-  latency ranges, mutable-message snapshot functions, dynamic endpoint
-  registration, lifecycle tracing, and directed partition matrices.
-- Active partitions are checked at send and delivery time. A partition can
-  therefore cut a packet already in flight.
-- A shared trace recorder assigns scheduler, random, and network events one
-  synchronous global order.
+A crash destroys volatile `raft.Node` state. Restart creates a fresh node only
+from the durable store. This lets tests distinguish a crash immediately before
+persistence from one immediately after it.
 
-Determinism also requires deterministic application callbacks. In particular,
-do not let unordered map iteration, wall-clock reads, global random state,
-concurrent work, or external I/O decide which simulation operation runs next.
-The full stability boundary is documented in [COMPATIBILITY.md](COMPATIBILITY.md).
-
-## Basic use
+## Quick start
 
 ```go
-simulation := sim.New()
-networkRandom := sim.NewRand(42)
-router, err := sim.NewRouter(
-    simulation,
-    networkRandom,
-    sim.LinkConfig{
-        MinLatency:      5 * time.Millisecond,
-        MaxLatency:      25 * time.Millisecond,
-        LossProbability: 0.01,
-    },
-    func(m Message) Message { return m },
-)
+config := raftsim.DefaultConfig("a", "b", "c")
+config.Seed = 42
+
+cluster, err := raftsim.New(config)
 if err != nil {
-    t.Fatal(err)
+    log.Fatal(err)
+}
+if _, err := cluster.RunUntil(2 * time.Second); err != nil {
+    log.Fatal(err)
 }
 
-router.Register("node-1", node1.Handle)
-router.Register("node-2", node2.Handle)
-router.Send("node-1", "node-2", Message{Term: 4})
-
-simulation.RunUntil(10 * time.Second)
-```
-
-For mutable messages, provide a real snapshot function. `CloneBytes` is
-included for `[]byte`. Passing `nil` uses assignment and is appropriate for
-immutable messages and value types.
-
-## Machine-readable traces
-
-Attach one recorder to every component whose decisions belong in the same
-execution. Each line is a `d-raft.trace/v1` JSON object with a global sequence
-number. Times and durations are integer nanoseconds; `uint64` random values are
-strings so JSON consumers cannot lose precision.
-
-```go
-var output bytes.Buffer
-trace := sim.NewJSONLRecorder(&output)
-
-simulation.SetTraceSink(trace)
-networkRandom.SetTraceSink(trace, "network")
-router.SetTraceSink(trace)
-
-// Run the scenario, then check encoding or writer failures.
-simulation.Run()
-if err := trace.Err(); err != nil {
-    t.Fatal(err)
+leader, ok := cluster.Leader()
+if !ok {
+    log.Fatal("no unique leader")
+}
+if err := cluster.ProposeTo(leader, []byte("set x=1")); err != nil {
+    log.Fatal(err)
 }
 ```
 
-The stream covers event scheduling, cancellation and execution; explicit
-clock advances; semantic random operations; endpoint and link changes;
-partition matrices; and packet scheduling, delivery, drops, and JSON-encoded
-message snapshots. Tracing is synchronous and trace sinks must not call back
-into a component, because doing so could affect event ordering.
+Partitions, scheduled crashes, restarts, and crash-after-persist boundaries are
+available directly on `raftsim.Cluster`. Every semantic step is checked; when
+`StopOnViolation` is enabled, a run stops at the first safety violation.
 
-## Partitions
+## Replay semantic decisions
 
-Symmetric groups cover the common split-brain case:
+Recording is separate from the observational trace. The choice tape describes
+election timeouts, network loss and latency, and storage completion latency by
+stable semantic identity.
 
 ```go
-split, err := sim.NewPartitions(
-    []sim.NodeID{"node-1", "node-2"},
-    []sim.NodeID{"node-3", "node-4", "node-5"},
-)
-router.SetPartition(split)
+recorder := decision.NewRecorder(decision.NewSeedDecider(42))
+config.Decider = recorder
+original, _ := raftsim.New(config)
+_, _ = original.RunUntil(2 * time.Second)
 
-// Heal every link.
-router.SetPartition(nil)
+tape := recorder.Tape()
+replay, _ := decision.NewTapeDecider(tape)
+config.Seed = 999 // infrastructure RNG no longer controls these choices
+config.Decider = replay
+replayed, _ := raftsim.New(config)
+_, _ = replayed.RunUntil(2 * time.Second)
+if err := replay.Finish(); err != nil {
+    log.Fatal(err)
+}
 ```
 
-Use `NewPartitionMatrix` for asymmetric failures. Rows are sources, columns
-are destinations, and `true` permits a packet. A node omitted from an active
-matrix is isolated.
+`TapeDecider` stops at the first choice ID, kind, domain, or selection mismatch.
+This makes replay drift explicit instead of silently producing a different run.
+Exact execution also requires the same scenario version, external actions, and
+run horizon; the forthcoming run-artifact format will bundle those inputs.
 
-For randomized protocols, derive separate streams with `Rand.Split` so that
-network fault draws do not shift when a node adds an unrelated random choice.
+## Observational traces
+
+`sim.JSONLRecorder` emits globally ordered `d-raft.trace/v1` JSON Lines.
+`trace.Decoder` enforces schema and sequence rules, supports compatible and
+strict validation, bounds record size, and preserves protocol payloads as
+`json.RawMessage` so 64-bit terms and indexes are never routed through
+`float64`.
+
+The observational trace and semantic decision tape are deliberately distinct:
+the former explains what happened; the latter drives an execution.
+
+## Determinism boundary
+
+For a fixed d-raft version, initial state, API-call sequence, decision tape or
+seed, and deterministic callbacks, d-raft reproduces virtual time, event and
+packet order, protocol state, durable state, and trace output. Unordered map
+iteration, wall-clock reads, external I/O, concurrent callbacks, and mutation
+after an inadequately cloned send are outside that guarantee. See
+[COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Development
 
 ```bash
 go test ./...
 go vet ./...
-go test -bench . -benchmem ./...
+go test -race ./...
 ```
 
-The project is licensed under [Apache 2.0](LICENSE).
+Contributions should include a deterministic regression test and, for protocol
+changes, a crash-boundary test where persistence matters. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Citation
+## Prior art and positioning
+
+d-raft builds on ideas demonstrated by etcd/raft's deterministic core and TLA+
+trace validation, FoundationDB simulation, DEMi, SAMC, MadSim/MadRaft, Oddity,
+Coyote, Turmoil, VOPR, and commercial deterministic-testing systems such as
+Antithesis. The intended contribution is a portable semantic counterexample
+format and reduction/evaluation workflow, not another claim that seeded
+simulation itself is new.
+
+## Citation and license
 
 If d-raft supports published work, cite the repository using
-[`CITATION.cff`](CITATION.cff). Research reports should include the d-raft
-version or commit, Go toolchain, seed or trace, and scenario configuration.
+[`CITATION.cff`](CITATION.cff) and record the release or commit, Go toolchain,
+scenario version, adapter version, and semantic tape schema.
+
+Licensed under [Apache 2.0](LICENSE).
