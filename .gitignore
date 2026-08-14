@@ -1,0 +1,6 @@
+.idea/
+*.test
+*.out
+coverage.*
+cpu.prof
+mem.prof

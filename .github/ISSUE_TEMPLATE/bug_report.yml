@@ -1,0 +1,39 @@
+name: Bug report
+description: Report incorrect behavior or a reproducibility failure
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve d-raft's correctness and reproducibility.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include code, seed, scenario, and a minimized trace when possible.
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: d-raft version or commit
+    validations:
+      required: true
+  - type: input
+    id: go
+    attributes:
+      label: Go version
+      placeholder: Output of go version
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and additional context

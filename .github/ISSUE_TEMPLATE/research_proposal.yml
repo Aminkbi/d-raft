@@ -1,0 +1,26 @@
+name: Research proposal
+description: Propose an experiment, fault model, invariant, or implementation adapter
+title: "research: "
+labels: [research]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Research question
+      description: State the falsifiable question or engineering hypothesis.
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: Proposed method
+      description: Describe the workload, fault model, baseline, and measurements.
+    validations:
+      required: true
+  - type: textarea
+    id: validity
+    attributes:
+      label: Threats to validity
+      description: What might limit or bias the result?
+    validations:
+      required: true
