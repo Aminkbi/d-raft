@@ -181,6 +181,22 @@ func TestDeriveRejectsNonReplayableSourceEvidence(t *testing.T) {
 	}
 }
 
+func TestDeriveRejectsCanonicalIdentityDrift(t *testing.T) {
+	directory := t.TempDir()
+	scenario, configuration, err := experiment.Canonical(experiment.PortableFaultsV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := writeSourceRunWithConfiguration(t, filepath.Join(directory, "valid.json"), scenario, configuration, experiment.PortableFaultsV1DecisionSeed)
+	source.run.Reproducibility.DecisionSeed = artifact.Uint64(experiment.PortableFaultsV1DecisionSeed + 1)
+	driftedPath := filepath.Join(directory, "drifted.json")
+	writeRun(t, driftedPath, source.run)
+	var stdout, stderr bytes.Buffer
+	if code := execute([]string{"derive", "--source-run", driftedPath, "--out", filepath.Join(directory, "plan.json")}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "canonical scenario") {
+		t.Fatalf("derive = %d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestVerifyRejectsForgedDerivedEvidenceWithMatchingManifest(t *testing.T) {
 	directory := t.TempDir()
 	sourcePath, planPath, prefix := createTestBundle(t, directory, "forged")

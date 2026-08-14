@@ -401,6 +401,11 @@ func verifyReferenceSource(run artifact.Run) error {
 	if run.Schema != artifact.SchemaVersion || run.Adapter != wantAdapter {
 		return fmt.Errorf("requires %s from %s@%s", artifact.SchemaVersion, wantAdapter.ID, wantAdapter.Version)
 	}
+	if name, ok := experiment.CanonicalName(run.Scenario); ok {
+		if err := experiment.VerifyCanonical(name, run.Scenario, run.Configuration, uint64(run.Reproducibility.DecisionSeed)); err != nil {
+			return err
+		}
+	}
 	replay, err := decision.NewTapeDecider(run.Decisions)
 	if err != nil {
 		return err

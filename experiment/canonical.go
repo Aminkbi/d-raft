@@ -19,8 +19,8 @@ const PortableFaultsV1 = "portable-faults-v1"
 const PortableFaultsV1DecisionSeed uint64 = 1
 
 // Canonical returns one immutable, named experiment input. The caller owns the
-// returned values and may select a decision seed independently of the fixed
-// infrastructure seed.
+// returned values and must obtain the matching semantic seed from
+// CanonicalDecisionSeed.
 func Canonical(name string) (artifact.Scenario, artifact.Configuration, error) {
 	switch name {
 	case PortableFaultsV1:
