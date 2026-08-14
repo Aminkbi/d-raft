@@ -27,3 +27,17 @@ completion, invariant-ID agreement, and neutral-witness agreement separately.
 | --- | --- | --- |
 | `d-raft/reference@3` | Research reference model; full current feature surface and canonical cache | [README](README.md) |
 | `go.etcd.io/raft/v3@3.7.0+d-raft.1` | Experimental production-core adapter; fixed-membership capability subset | [adapter README](adapters/etcdraft/README.md) |
+
+## Portable KV application profile
+
+Both adapters expose the opt-in `d-raft.kv-command/v1` application profile and
+`d-raft.kv-commitment/v1` comparison value. The reference adapter additionally
+supports generated `d-raft.kv-checkpoint/v1` snapshots; the etcd/raft adapter's
+snapshot capability remains rejected. Existing opaque proposal paths and
+compatibility tuples are unchanged.
+
+Application-profile comparisons require static capability eligibility,
+successful prevalidation, deterministic completion after an explicit
+heal/restart convergence tail, and equal portable commitments. A disagreement
+in which logical commands were accepted is reported separately as workload or
+projection divergence. See [APPLICATION_ORACLE.md](APPLICATION_ORACLE.md).

@@ -8,12 +8,76 @@ import (
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/decision"
 	"github.com/aminkbi/d-raft/explore"
 	"github.com/aminkbi/d-raft/raft"
 	"github.com/aminkbi/d-raft/raftsim"
 )
+
+type panicDecider struct{}
+
+func (panicDecider) Choose(decision.Choice) (decision.Selection, error) {
+	panic("semantic decision consumed during prevalidation")
+}
+
+func portableCommand(t testing.TB, start byte, key, value string) []byte {
+	t.Helper()
+	var id apporacle.CommandID
+	for index := range id {
+		id[index] = start + byte(index)
+	}
+	encoded, err := apporacle.EncodeCommand(apporacle.Command{ID: id, Operation: apporacle.Put, Key: []byte(key), Value: []byte(value)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func TestApplicationExecutionPrevalidatesAndUsesDistinctObservation(t *testing.T) {
+	t.Parallel()
+
+	config := raftsim.DefaultConfig("a")
+	config.ElectionTimeoutMin = 10 * time.Millisecond
+	config.ElectionTimeoutMax = 10 * time.Millisecond
+	config.HeartbeatInterval = 2 * time.Millisecond
+	configuration := artifact.ConfigurationFrom(config)
+	command := portableCommand(t, 1, "x", "1")
+	scenario := artifact.Scenario{
+		ID: "portable-application", Version: "1", DurationNS: int64(60 * time.Millisecond), MaxSteps: 1_000,
+		Actions: []artifact.Action{{AtNS: int64(25 * time.Millisecond), Kind: artifact.ActionPropose, Node: "a", Data: command}},
+	}
+	application := apporacle.KVConfig()
+	portable, err := ExecuteWithApplication(scenario, configuration, decision.NewSeedDecider(7), application)
+	if err != nil || portable.Status != artifact.OutcomeCompleted {
+		t.Fatalf("portable outcome=%+v err=%v", portable, err)
+	}
+	legacy, err := Execute(scenario, configuration, decision.NewSeedDecider(7))
+	if err != nil || legacy.Status != artifact.OutcomeCompleted {
+		t.Fatalf("legacy outcome=%+v err=%v", legacy, err)
+	}
+	if portable.ObservationDigest == legacy.ObservationDigest {
+		t.Fatal("application profile reused the legacy observation digest")
+	}
+
+	invalid := scenario
+	invalid.Actions = []artifact.Action{{AtNS: 1, Kind: artifact.ActionPropose, Data: []byte("opaque")}}
+	if _, err := ExecuteWithApplication(invalid, configuration, panicDecider{}, application); err == nil {
+		t.Fatal("malformed portable proposal was accepted")
+	}
+	duplicate := scenario
+	duplicate.Actions = append([]artifact.Action(nil), scenario.Actions...)
+	duplicate.Actions = append(duplicate.Actions, artifact.Action{AtNS: int64(30 * time.Millisecond), Kind: artifact.ActionPropose, Node: "a", Data: append([]byte(nil), command...)})
+	if _, err := ExecuteWithApplication(duplicate, configuration, panicDecider{}, application); err == nil {
+		t.Fatal("duplicate portable command ID was accepted")
+	}
+	badSnapshot := scenario
+	badSnapshot.Actions = []artifact.Action{{AtNS: 1, Kind: artifact.ActionSnapshot, Node: "a", Data: []byte("opaque")}}
+	if _, err := ExecuteWithApplication(badSnapshot, configuration, panicDecider{}, application); err == nil {
+		t.Fatal("opaque portable snapshot was accepted")
+	}
+}
 
 func TestReferenceFrontierIsStableAndIncludesScenarioNamespace(t *testing.T) {
 	t.Parallel()

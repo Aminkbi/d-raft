@@ -117,6 +117,24 @@ The experimental production-core tuple is also atomic:
   codec v1, `d-raft.etcdraft-check/common-durable-v1`, and
   `d-raft.etcdraft-observation/v1`.
 
+The opt-in portable application profile adds sidecar compatibility boundaries
+without redefining either legacy tuple:
+
+- command `d-raft.kv-command/v1`;
+- state `d-raft.kv-state/v1`;
+- history `d-raft.kv-chain/v1`;
+- checkpoint `d-raft.kv-checkpoint/v1`;
+- commitment `d-raft.kv-commitment/v1`;
+- reference application observation `d-raft.reference-app-observation/v1`;
+  and
+- etcd/raft application observation `d-raft.etcdraft-app-observation/v1`.
+
+These are explicit execution profiles selected through application-aware APIs;
+they are never inferred from opaque proposal bytes. Reference canonical-cache
+frontiers are unsupported in application mode. Exact decision tapes and full
+observation digests remain adapter-local; the portable commitment is the
+normalized comparison surface.
+
 The current CLI executes and minimizes only the v3 reference adapter. It can
 decode and inspect coherent v1 and v2 artifacts, but rejects their replay
 rather than pretending newer membership-aware semantics reproduced an older

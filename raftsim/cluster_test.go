@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/check"
 	"github.com/aminkbi/d-raft/decision"
 	"github.com/aminkbi/d-raft/raft"
@@ -144,6 +145,283 @@ func TestClusterElectsAndReplicates(t *testing.T) {
 	}
 	if status, err := cluster.Status(leader); err != nil || status.Role != raft.Leader {
 		t.Fatalf("leader %q status=%+v err=%v", leader, status, err)
+	}
+}
+
+func TestPortableApplicationIsOptInAndPreservesLegacyPayloads(t *testing.T) {
+	t.Parallel()
+
+	cluster := mustCluster(t, singleNodeCrashConfig())
+	runUntil(t, cluster, 40*time.Millisecond)
+	if _, err := cluster.ApplicationCommitment("a"); !errors.Is(err, ErrApplicationDisabled) {
+		t.Fatalf("ApplicationCommitment error = %v", err)
+	}
+	if err := cluster.SnapshotApplication("a"); !errors.Is(err, ErrApplicationDisabled) {
+		t.Fatalf("SnapshotApplication error = %v", err)
+	}
+	proposal := []byte("legacy arbitrary proposal")
+	if err := cluster.Propose(proposal); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+30*time.Millisecond)
+	checkpoint := []byte("legacy arbitrary snapshot")
+	if err := cluster.Snapshot("a", checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+20*time.Millisecond)
+	store, err := cluster.Store("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(store.State.Snapshot.Data, checkpoint) || len(store.Applied) < 2 || !bytes.Equal(store.Applied[len(store.Applied)-1].Data, proposal) {
+		t.Fatalf("legacy snapshot/proposal changed semantics: %+v", store)
+	}
+}
+
+func TestPortableApplicationRejectsMalformedProposalWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	config := applicationConfig(singleNodeCrashConfig())
+	cluster := mustCluster(t, config)
+	runUntil(t, cluster, 40*time.Millisecond)
+	beforeCommitment, err := cluster.ApplicationCommitment("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeStore, err := cluster.Store("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cluster.Propose([]byte("not a portable command")); !errors.Is(err, apporacle.ErrInvalidCommand) {
+		t.Fatalf("Propose error = %v", err)
+	}
+	afterCommitment, err := cluster.ApplicationCommitment("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterStore, err := cluster.Store("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterCommitment != beforeCommitment || !entriesEqual(afterStore.State.Log, beforeStore.State.Log) || afterStore.AppliedIndex != beforeStore.AppliedIndex {
+		t.Fatalf("malformed proposal mutated state: before=%+v/%+v after=%+v/%+v", beforeCommitment, beforeStore, afterCommitment, afterStore)
+	}
+	if err := cluster.Snapshot("a", []byte("opaque")); !errors.Is(err, ErrApplicationSnapshot) {
+		t.Fatalf("opaque Snapshot error = %v", err)
+	}
+}
+
+func TestPortableApplicationCommandsConverge(t *testing.T) {
+	t.Parallel()
+
+	config := applicationConfig(testConfig("a", "b", "c"))
+	cluster := mustCluster(t, config)
+	runUntil(t, cluster, 500*time.Millisecond)
+	commands := [][]byte{
+		portablePut(t, 1, []byte("x"), []byte("1")),
+		portablePut(t, 17, []byte("y"), []byte("2")),
+	}
+	for _, command := range commands {
+		if err := cluster.Propose(command); err != nil {
+			t.Fatal(err)
+		}
+		runUntil(t, cluster, cluster.Simulator().Now()+200*time.Millisecond)
+	}
+
+	var want apporacle.Commitment
+	for index, id := range cluster.Members() {
+		commitment, err := cluster.ApplicationCommitment(id)
+		if err != nil {
+			t.Fatalf("ApplicationCommitment(%q): %v", id, err)
+		}
+		if commitment.Schema != apporacle.CommitmentSchema || commitment.Commands != 2 {
+			t.Fatalf("node %q commitment = %+v", id, commitment)
+		}
+		if index == 0 {
+			want = commitment
+		} else if commitment != want {
+			t.Fatalf("application commitments did not converge: node %q=%+v want=%+v", id, commitment, want)
+		}
+	}
+	if _, err := cluster.ApplicationCommitment("unknown"); !errors.Is(err, ErrUnknownNode) {
+		t.Fatalf("unknown node commitment error = %v", err)
+	}
+}
+
+func TestPortableApplicationSurvivesCrashAndRestart(t *testing.T) {
+	t.Parallel()
+
+	config := applicationConfig(singleNodeCrashConfig())
+	cluster := mustCluster(t, config)
+	runUntil(t, cluster, 40*time.Millisecond)
+	if err := cluster.Propose(portablePut(t, 1, []byte("x"), []byte("1"))); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+30*time.Millisecond)
+	before, err := cluster.ApplicationCommitment("a")
+	if err != nil || before.Commands != 1 {
+		t.Fatalf("before=%+v err=%v", before, err)
+	}
+	if err := cluster.Crash("a"); err != nil {
+		t.Fatal(err)
+	}
+	if cluster.processes["a"].application != nil {
+		t.Fatal("crash retained volatile portable application pointer")
+	}
+	down, err := cluster.ApplicationCommitment("a")
+	if err != nil || down != before {
+		t.Fatalf("down commitment=%+v err=%v, want %+v", down, err, before)
+	}
+	if err := cluster.Restart("a"); err != nil {
+		t.Fatal(err)
+	}
+	afterRestart, err := cluster.ApplicationCommitment("a")
+	if err != nil || afterRestart != before {
+		t.Fatalf("restart commitment=%+v err=%v, want %+v", afterRestart, err, before)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+50*time.Millisecond)
+	if err := cluster.Propose(portablePut(t, 17, []byte("y"), []byte("2"))); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+30*time.Millisecond)
+	continued, err := cluster.ApplicationCommitment("a")
+	if err != nil || continued.Commands != 2 || continued.ChainDigest == before.ChainDigest {
+		t.Fatalf("continued=%+v err=%v before=%+v", continued, err, before)
+	}
+}
+
+func TestPortableApplicationSnapshotInstallsAndRestores(t *testing.T) {
+	t.Parallel()
+
+	config := applicationConfig(testConfig("a", "b", "c"))
+	cluster := mustCluster(t, config)
+	runUntil(t, cluster, 500*time.Millisecond)
+	leader, ok := cluster.Leader()
+	if !ok {
+		t.Fatalf("no leader: %+v", cluster.Statuses())
+	}
+	var lagger raft.NodeID
+	for _, id := range cluster.Members() {
+		if id != leader {
+			lagger = id
+			break
+		}
+	}
+	if err := cluster.Crash(lagger); err != nil {
+		t.Fatal(err)
+	}
+	for index, value := range []string{"one", "two", "three"} {
+		if err := cluster.Propose(portablePut(t, byte(index*16+1), []byte{byte('a' + index)}, []byte(value))); err != nil {
+			t.Fatal(err)
+		}
+		runUntil(t, cluster, cluster.Simulator().Now()+150*time.Millisecond)
+	}
+	if err := cluster.SnapshotApplication(leader); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+30*time.Millisecond)
+	leaderCommitment, err := cluster.ApplicationCommitment(leader)
+	if err != nil || leaderCommitment.Commands != 3 {
+		t.Fatalf("leader commitment=%+v err=%v", leaderCommitment, err)
+	}
+	if err := cluster.Restart(lagger); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+2*time.Second)
+	laggerCommitment, err := cluster.ApplicationCommitment(lagger)
+	if err != nil || laggerCommitment != leaderCommitment {
+		t.Fatalf("lagger commitment=%+v err=%v, leader=%+v", laggerCommitment, err, leaderCommitment)
+	}
+	store, err := cluster.Store(lagger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.InstalledSnapshot.LastIncludedIndex == 0 || len(store.InstalledSnapshot.Data) == 0 {
+		t.Fatalf("portable snapshot was not installed: %+v", store.InstalledSnapshot)
+	}
+	checkpoint, err := apporacle.DecodeCheckpoint(store.InstalledSnapshot.Data)
+	if err != nil {
+		t.Fatalf("DecodeCheckpoint: %v", err)
+	}
+	restored, err := apporacle.Restore(checkpoint)
+	if err != nil || restored.Commitment() != leaderCommitment {
+		t.Fatalf("restored commitment=%+v err=%v, want %+v", restored.Commitment(), err, leaderCommitment)
+	}
+	if err := cluster.Propose(portablePut(t, 65, []byte("suffix"), []byte("after-snapshot"))); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+300*time.Millisecond)
+	wantAfterSuffix, err := cluster.ApplicationCommitment(leader)
+	if err != nil || wantAfterSuffix.Commands != 4 {
+		t.Fatalf("suffix commitment=%+v err=%v", wantAfterSuffix, err)
+	}
+	if err := cluster.Crash(lagger); err != nil {
+		t.Fatal(err)
+	}
+	if cluster.processes[lagger].application != nil {
+		t.Fatal("crash retained snapshot-restored application pointer")
+	}
+	if err := cluster.Restart(lagger); err != nil {
+		t.Fatal(err)
+	}
+	gotAfterRestart, err := cluster.ApplicationCommitment(lagger)
+	if err != nil || gotAfterRestart != wantAfterSuffix {
+		t.Fatalf("checkpoint+suffix recovery=%+v err=%v, want %+v", gotAfterRestart, err, wantAfterSuffix)
+	}
+}
+
+func TestPortableApplicationRecoversSnapshotPersistedBeforeAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	cluster := mustCluster(t, applicationConfig(singleNodeCrashConfig()))
+	runUntil(t, cluster, 40*time.Millisecond)
+	if err := cluster.Propose(portablePut(t, 1, []byte("durable"), []byte("snapshot"))); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+30*time.Millisecond)
+	want, err := cluster.ApplicationCommitment("a")
+	if err != nil || want.Commands != 1 {
+		t.Fatalf("before snapshot=%+v err=%v", want, err)
+	}
+	if err := cluster.CrashAfterNextPersist("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cluster.SnapshotApplication("a"); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+15*time.Millisecond)
+	if cluster.processes["a"].up || cluster.processes["a"].application != nil {
+		t.Fatal("snapshot persistence boundary did not crash and clear volatile application state")
+	}
+	store, err := cluster.Store("a")
+	if err != nil || store.State.Snapshot.LastIncludedIndex != store.AppliedIndex || len(store.State.Snapshot.Data) == 0 {
+		t.Fatalf("durable snapshot store=%+v err=%v", store, err)
+	}
+	if err := cluster.Restart("a"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cluster.ApplicationCommitment("a")
+	if err != nil || got != want {
+		t.Fatalf("snapshot restart commitment=%+v err=%v, want %+v", got, err, want)
+	}
+}
+
+func TestPortableApplicationDisablesCanonicalState(t *testing.T) {
+	t.Parallel()
+
+	config := applicationConfig(testConfig("a", "b", "c"))
+	cluster, err := NewPaused(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cluster.CanonicalState(); !errors.Is(err, ErrUncacheableState) {
+		t.Fatalf("CanonicalState before bootstrap error = %v", err)
+	}
+	if err := cluster.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cluster.CanonicalState(); !errors.Is(err, ErrUncacheableState) {
+		t.Fatalf("CanonicalState after bootstrap error = %v", err)
 	}
 }
 
@@ -621,6 +899,25 @@ func singleNodeCrashConfig() Config {
 	config.HeartbeatInterval = 2 * time.Millisecond
 	config.StorageLatency = 10 * time.Millisecond
 	return config
+}
+
+func applicationConfig(config Config) Config {
+	application := apporacle.KVConfig()
+	config.Application = &application
+	return config
+}
+
+func portablePut(t testing.TB, start byte, key, value []byte) []byte {
+	t.Helper()
+	var id apporacle.CommandID
+	for index := range id {
+		id[index] = start + byte(index)
+	}
+	encoded, err := apporacle.EncodeCommand(apporacle.Command{ID: id, Operation: apporacle.Put, Key: slices.Clone(key), Value: slices.Clone(value)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func mustCluster(t *testing.T, config Config) *Cluster {

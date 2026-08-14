@@ -24,8 +24,10 @@ The project is created and maintained by
 > implemented. Joint-consensus membership changes and learners are implemented,
 > including durable recovery and snapshot-aware configuration state. An
 > experimental adapter for the production-used `go.etcd.io/raft/v3` core is
-> implemented for a declared fixed-membership capability subset. Portable
-> application oracles, mutants, and comparative evaluation remain active work.
+> implemented for a declared fixed-membership capability subset. A versioned,
+> portable binary KV application oracle now produces independently checkable
+> state/history commitments in both adapters, including reference snapshot
+> recovery. Mutants and comparative evaluation remain active work.
 
 ## Why d-raft?
 
@@ -55,6 +57,7 @@ plan.
 | `decision` | Versioned semantic choices, seeded selection, recording, exact tape replay, and domain-drift detection |
 | `trace` | Bounded, line-aware, payload-lossless decoder for known `d-raft.trace/v1` fields |
 | `artifact` | Strict, self-describing `d-raft.run/v3` artifacts with scenarios, voter/learner roles, configuration actions, environment, tape, outcome, digest, and witnesses; legacy v1/v2 decoding remains available |
+| `apporacle` | Strict binary KV commands, canonical checkpoints, known-answer vectors, and adapter-neutral state/history commitments |
 | `experiment` | Clean-run execution of versioned scenarios and proposal, snapshot, begin/finalize membership, crash/restart, partition, and heal actions |
 | `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
 | `explore` | Clean-rerun bounded DFS with deterministic suffix completion and collision-safe canonical-state pruning |
@@ -191,7 +194,8 @@ default for `draft explore` and bounded with `--cache-entries` and
 [ARTIFACTS.md](ARTIFACTS.md), [MEMBERSHIP.md](MEMBERSHIP.md),
 [SNAPSHOTS.md](SNAPSHOTS.md), [EXPLORATION.md](EXPLORATION.md),
 [CANONICAL_STATE.md](CANONICAL_STATE.md), and
-[MINIMIZATION.md](MINIMIZATION.md).
+[MINIMIZATION.md](MINIMIZATION.md). The opt-in cross-adapter application profile
+is specified in [APPLICATION_ORACLE.md](APPLICATION_ORACLE.md).
 
 ## Observational traces
 

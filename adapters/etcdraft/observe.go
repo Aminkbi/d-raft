@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/check"
 	rootraft "github.com/aminkbi/d-raft/raft"
@@ -15,6 +16,7 @@ import (
 )
 
 const ObservationSchemaVersion = "d-raft.etcdraft-observation/v1"
+const ApplicationObservationSchemaVersion = "d-raft.etcdraft-app-observation/v1"
 const CheckerProfile = "d-raft.etcdraft-check/common-durable-v1"
 
 type nodeSnapshot struct {
@@ -25,6 +27,7 @@ type nodeSnapshot struct {
 	AppliedIndex uint64                   `json:"applied_index"`
 	Applied      []rootraft.Entry         `json:"applied"`
 	Chain        []Block                  `json:"chain"`
+	Application  *apporacle.Commitment    `json:"application,omitempty"`
 	Pending      *pendingSnapshot         `json:"pending,omitempty"`
 	Mailbox      []inputSnapshot          `json:"mailbox,omitempty"`
 }
@@ -292,7 +295,11 @@ func (c *Cluster) observe() {
 }
 
 func (c *Cluster) SnapshotDigest() (string, error) {
-	snapshot := observationSnapshot{Schema: ObservationSchemaVersion, Adapter: AdapterID, Version: AdapterVersion, AtNS: int64(c.simulator.Now()), Violations: c.Violations()}
+	schema := ObservationSchemaVersion
+	if c.config.Application != nil {
+		schema = ApplicationObservationSchemaVersion
+	}
+	snapshot := observationSnapshot{Schema: schema, Adapter: AdapterID, Version: AdapterVersion, AtNS: int64(c.simulator.Now()), Violations: c.Violations()}
 	for _, name := range c.members {
 		process := c.processes[name]
 		durable, err := c.durableState(process)
@@ -311,9 +318,17 @@ func (c *Cluster) SnapshotDigest() (string, error) {
 		if err != nil {
 			return "", err
 		}
+		var application *apporacle.Commitment
+		if c.config.Application != nil {
+			commitment, err := c.applicationCommitment(process)
+			if err != nil {
+				return "", err
+			}
+			application = &commitment
+		}
 		snapshot.Nodes = append(snapshot.Nodes, nodeSnapshot{
 			ID: name, Up: process.up, Status: status, Durable: durable, AppliedIndex: process.appliedIndex,
-			Applied: cloneEntries(process.applied), Chain: process.chain.Blocks(), Pending: pending, Mailbox: mailbox,
+			Applied: cloneEntries(process.applied), Chain: process.chain.Blocks(), Application: application, Pending: pending, Mailbox: mailbox,
 		})
 	}
 	return artifact.DigestJSON(snapshot)
@@ -368,4 +383,28 @@ func (c *Cluster) ChainBlocks(name rootraft.NodeID) ([]Block, error) {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownNode, name)
 	}
 	return process.chain.Blocks(), nil
+}
+
+// ApplicationCommitment returns one node's portable application commitment.
+func (c *Cluster) ApplicationCommitment(name rootraft.NodeID) (apporacle.Commitment, error) {
+	process, ok := c.processes[name]
+	if !ok {
+		return apporacle.Commitment{}, fmt.Errorf("%w: %q", ErrUnknownNode, name)
+	}
+	if c.config.Application == nil {
+		return apporacle.Commitment{}, ErrUnsupported
+	}
+	return c.applicationCommitment(process)
+}
+
+func (c *Cluster) applicationCommitment(process *process) (apporacle.Commitment, error) {
+	application := process.application
+	if application == nil {
+		var err error
+		application, err = recoverApplication(process)
+		if err != nil {
+			return apporacle.Commitment{}, err
+		}
+	}
+	return application.Commitment(), nil
 }

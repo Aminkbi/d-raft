@@ -51,6 +51,9 @@ The repository currently contains:
 9. An experimental adapter for the unmodified `go.etcd.io/raft/v3` v3.7.0
    `RawNode` core, with explicit fixed-membership capabilities, persistence
    barriers, conservative checking, and adapter-local exact replay.
+10. A versioned binary KV application oracle with strict canonical commands,
+    self-verifying checkpoints, reference snapshot continuity, and compact
+    adapter-neutral history/state commitments in both adapters.
 
 The reference model is a fixture and oracle for experiments, not itself the
 claimed research novelty.
@@ -100,7 +103,8 @@ violation witness.
 - [x] Joint-consensus membership changes and learners
 - [x] Canonical reference frontiers and collision-safe bounded state caching
 - [x] Experimental production-core Raft adapter with declared capability boundaries
-- [ ] Portable application-state oracle and seeded mutant corpus
+- [x] Portable application-state oracle and cross-adapter commitment surface
+- [ ] Versioned seeded mutant corpus and isolated execution harness
 - [ ] Comparative evaluation, public counterexample corpus, and archival release
 
 The completed membership milestone is deliberately scoped to role changes over
@@ -170,11 +174,10 @@ artifact.
 - Cross-implementation semantics may be narrower than any one implementation's
   feature set.
 - Results from one production adapter or one mutant corpus may not generalize.
-- Opaque application snapshots cannot prove leader completeness for entries
-  below their boundary. The current checker detects conflicting snapshots at
-  an equal boundary but reports no stronger compacted-prefix claim; the planned
-  portable application-state oracle supplies independently comparable state
-  commitments.
+- Opaque legacy application snapshots cannot prove leader completeness for
+  entries below their boundary. The portable KV profile supplies independently
+  comparable bounded state/history commitments, but that shared oracle has
+  common-mode risk and does not itself prove Raft safety or linearizability.
 
 These limitations must remain explicit in papers, talks, release notes, and
 artifact documentation.

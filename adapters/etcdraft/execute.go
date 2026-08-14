@@ -6,6 +6,7 @@ import (
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/decision"
 	rootraft "github.com/aminkbi/d-raft/raft"
@@ -29,6 +30,51 @@ func Execute(scenario artifact.Scenario, configuration artifact.Configuration, d
 		return artifact.Outcome{}, err
 	}
 	return executeScheduled(cluster, scenario)
+}
+
+// ExecuteWithApplication runs the same adapter under the explicit portable KV
+// profile. Existing Execute retains opaque proposal semantics and digest bytes.
+func ExecuteWithApplication(scenario artifact.Scenario, configuration artifact.Configuration, decider decision.Decider, application apporacle.Config) (artifact.Outcome, error) {
+	if err := artifact.ValidateExperiment(scenario, configuration); err != nil {
+		return artifact.Outcome{}, err
+	}
+	if err := validateScenarioCapabilities(scenario); err != nil {
+		return artifact.Outcome{}, err
+	}
+	if err := application.Validate(); err != nil {
+		return artifact.Outcome{}, err
+	}
+	if err := validateApplicationProposals(scenario); err != nil {
+		return artifact.Outcome{}, err
+	}
+	config, err := ConfigurationFrom(configuration, decider)
+	if err != nil {
+		return artifact.Outcome{}, err
+	}
+	config.Application = &application
+	cluster, err := New(config)
+	if err != nil {
+		return artifact.Outcome{}, err
+	}
+	return executeScheduled(cluster, scenario)
+}
+
+func validateApplicationProposals(scenario artifact.Scenario) error {
+	seen := make(map[apporacle.CommandID]struct{})
+	for _, action := range scenario.Actions {
+		if action.Kind != artifact.ActionPropose {
+			continue
+		}
+		command, err := apporacle.DecodeCommand(action.Data)
+		if err != nil {
+			return fmt.Errorf("etcdraft: invalid portable proposal: %w", err)
+		}
+		if _, exists := seen[command.ID]; exists {
+			return fmt.Errorf("etcdraft: %w: %s", apporacle.ErrDuplicateCommand, command.ID)
+		}
+		seen[command.ID] = struct{}{}
+	}
+	return nil
 }
 
 func validateScenarioCapabilities(scenario artifact.Scenario) error {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/check"
 	"github.com/aminkbi/d-raft/decision"
@@ -17,6 +18,7 @@ import (
 )
 
 const FrontierSchemaVersion = "d-raft.reference-frontier/v1"
+const ApplicationObservationSchemaVersion = "d-raft.reference-app-observation/v1"
 
 type nodeSnapshot struct {
 	ID     raft.NodeID   `json:"id"`
@@ -31,6 +33,22 @@ type observationSnapshot struct {
 	Violations []check.Violation `json:"violations,omitempty"`
 }
 
+type applicationNodeSnapshot struct {
+	ID          raft.NodeID          `json:"id"`
+	Up          bool                 `json:"up"`
+	Status      *raft.Status         `json:"status,omitempty"`
+	Store       raftsim.Store        `json:"store"`
+	Application apporacle.Commitment `json:"application"`
+}
+
+type applicationObservationSnapshot struct {
+	Schema            string                    `json:"schema"`
+	ApplicationSchema string                    `json:"application_schema"`
+	AtNS              int64                     `json:"at_ns"`
+	Nodes             []applicationNodeSnapshot `json:"nodes"`
+	Violations        []check.Violation         `json:"violations,omitempty"`
+}
+
 // Execute reruns a scenario from a clean cluster using decider.
 func Execute(scenario artifact.Scenario, configuration artifact.Configuration, decider decision.Decider) (artifact.Outcome, error) {
 	if err := artifact.ValidateExperiment(scenario, configuration); err != nil {
@@ -42,6 +60,28 @@ func Execute(scenario artifact.Scenario, configuration artifact.Configuration, d
 		return artifact.Outcome{}, err
 	}
 	return executeScheduled(cluster, scenario)
+}
+
+// ExecuteWithApplication runs the reference adapter under an explicit
+// portable KV profile. Legacy Execute continues to treat proposal bytes as
+// opaque and retains its existing observation schema.
+func ExecuteWithApplication(scenario artifact.Scenario, configuration artifact.Configuration, decider decision.Decider, application apporacle.Config) (artifact.Outcome, error) {
+	if err := artifact.ValidateExperiment(scenario, configuration); err != nil {
+		return artifact.Outcome{}, err
+	}
+	if err := application.Validate(); err != nil {
+		return artifact.Outcome{}, err
+	}
+	if err := validateApplicationScenario(scenario, true); err != nil {
+		return artifact.Outcome{}, err
+	}
+	config := configuration.ClusterConfig(decider, nil)
+	config.Application = &application
+	cluster, err := raftsim.New(config)
+	if err != nil {
+		return artifact.Outcome{}, err
+	}
+	return executeScheduledApplication(cluster, scenario)
 }
 
 // ExecuteWithFrontier reruns the controlled reference adapter and, when the
@@ -80,15 +120,20 @@ func ExecuteWithFrontier(scenario artifact.Scenario, configuration artifact.Conf
 }
 
 func executeScheduled(cluster *raftsim.Cluster, scenario artifact.Scenario) (artifact.Outcome, error) {
-	outcome, _, err := executeScheduledCore(cluster, scenario, artifact.Configuration{}, nil)
+	outcome, _, err := executeScheduledCore(cluster, scenario, artifact.Configuration{}, nil, false)
+	return outcome, err
+}
+
+func executeScheduledApplication(cluster *raftsim.Cluster, scenario artifact.Scenario) (artifact.Outcome, error) {
+	outcome, _, err := executeScheduledCore(cluster, scenario, artifact.Configuration{}, nil, true)
 	return outcome, err
 }
 
 func executeScheduledControlled(cluster *raftsim.Cluster, scenario artifact.Scenario, configuration artifact.Configuration, recorder *decision.Recorder) (artifact.Outcome, []byte, error) {
-	return executeScheduledCore(cluster, scenario, configuration, recorder)
+	return executeScheduledCore(cluster, scenario, configuration, recorder, false)
 }
 
-func executeScheduledCore(cluster *raftsim.Cluster, scenario artifact.Scenario, configuration artifact.Configuration, recorder *decision.Recorder) (artifact.Outcome, []byte, error) {
+func executeScheduledCore(cluster *raftsim.Cluster, scenario artifact.Scenario, configuration artifact.Configuration, recorder *decision.Recorder, application bool) (artifact.Outcome, []byte, error) {
 	var actionErr error
 	for _, source := range scenario.Actions {
 		action := cloneAction(source)
@@ -99,7 +144,11 @@ func executeScheduledCore(cluster *raftsim.Cluster, scenario artifact.Scenario, 
 		tag := sim.EventTag{Kind: sim.EventExternalAction, Data: data}
 		if _, err := cluster.Simulator().ScheduleAtTagged(time.Duration(action.AtNS), tag, func(_ *sim.Simulator) {
 			if actionErr == nil {
-				actionErr = applyAction(cluster, action)
+				if application && action.Kind == artifact.ActionSnapshot {
+					actionErr = cluster.SnapshotApplication(action.Node)
+				} else {
+					actionErr = applyAction(cluster, action)
+				}
 			}
 		}); err != nil {
 			return artifact.Outcome{}, nil, err
@@ -166,7 +215,13 @@ func executeScheduledCore(cluster *raftsim.Cluster, scenario artifact.Scenario, 
 	}
 
 	violations := cluster.Violations()
-	digest, digestErr := snapshotDigest(cluster, violations)
+	var digest string
+	var digestErr error
+	if application {
+		digest, digestErr = applicationSnapshotDigest(cluster, violations)
+	} else {
+		digest, digestErr = snapshotDigest(cluster, violations)
+	}
 	if digestErr != nil {
 		return artifact.Outcome{}, nil, digestErr
 	}
@@ -275,6 +330,56 @@ func snapshotDigest(cluster *raftsim.Cluster, violations []check.Violation) (str
 		snapshot.Nodes = append(snapshot.Nodes, node)
 	}
 	return artifact.DigestJSON(snapshot)
+}
+
+func applicationSnapshotDigest(cluster *raftsim.Cluster, violations []check.Violation) (string, error) {
+	snapshot := applicationObservationSnapshot{
+		Schema: ApplicationObservationSchemaVersion, ApplicationSchema: apporacle.CommandSchema,
+		AtNS: int64(cluster.Simulator().Now()), Violations: slices.Clone(violations),
+	}
+	for _, id := range cluster.Members() {
+		store, err := cluster.Store(id)
+		if err != nil {
+			return "", err
+		}
+		commitment, err := cluster.ApplicationCommitment(id)
+		if err != nil {
+			return "", err
+		}
+		node := applicationNodeSnapshot{ID: id, Up: true, Store: store, Application: commitment}
+		status, err := cluster.Status(id)
+		if errors.Is(err, raftsim.ErrNodeDown) {
+			node.Up = false
+		} else if err != nil {
+			return "", err
+		} else {
+			node.Status = &status
+		}
+		snapshot.Nodes = append(snapshot.Nodes, node)
+	}
+	return artifact.DigestJSON(snapshot)
+}
+
+func validateApplicationScenario(scenario artifact.Scenario, snapshots bool) error {
+	seen := make(map[apporacle.CommandID]struct{})
+	for _, action := range scenario.Actions {
+		switch action.Kind {
+		case artifact.ActionPropose:
+			command, err := apporacle.DecodeCommand(action.Data)
+			if err != nil {
+				return fmt.Errorf("experiment: invalid portable proposal: %w", err)
+			}
+			if _, exists := seen[command.ID]; exists {
+				return fmt.Errorf("experiment: %w: %s", apporacle.ErrDuplicateCommand, command.ID)
+			}
+			seen[command.ID] = struct{}{}
+		case artifact.ActionSnapshot:
+			if !snapshots || len(action.Data) != 0 {
+				return fmt.Errorf("experiment: portable snapshot must be generated by the adapter")
+			}
+		}
+	}
+	return nil
 }
 
 func cloneAction(action artifact.Action) artifact.Action {

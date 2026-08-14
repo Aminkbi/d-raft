@@ -11,20 +11,23 @@ import (
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/check"
 	"github.com/aminkbi/d-raft/decision"
 	"github.com/aminkbi/d-raft/raft"
 )
 
 var (
-	ErrInvalidConfig     = errors.New("raftsim: invalid configuration")
-	ErrUnknownNode       = errors.New("raftsim: unknown node")
-	ErrNodeDown          = errors.New("raftsim: node is down")
-	ErrNodeUp            = errors.New("raftsim: node is already up")
-	ErrNoLeader          = errors.New("raftsim: cluster has no unique leader")
-	ErrApplyOrder        = errors.New("raftsim: applied entry is out of order")
-	ErrTransportIdentity = errors.New("raftsim: transport identity mismatch")
-	ErrUncacheableState  = errors.New("raftsim: cluster state is not canonically inspectable")
+	ErrInvalidConfig       = errors.New("raftsim: invalid configuration")
+	ErrUnknownNode         = errors.New("raftsim: unknown node")
+	ErrNodeDown            = errors.New("raftsim: node is down")
+	ErrNodeUp              = errors.New("raftsim: node is already up")
+	ErrNoLeader            = errors.New("raftsim: cluster has no unique leader")
+	ErrApplyOrder          = errors.New("raftsim: applied entry is out of order")
+	ErrTransportIdentity   = errors.New("raftsim: transport identity mismatch")
+	ErrUncacheableState    = errors.New("raftsim: cluster state is not canonically inspectable")
+	ErrApplicationDisabled = errors.New("raftsim: portable application is disabled")
+	ErrApplicationSnapshot = errors.New("raftsim: portable application requires a generated checkpoint")
 )
 
 const CanonicalStateSchema = "d-raft.raftsim-state/v1"
@@ -44,6 +47,7 @@ type Config struct {
 	Trace              sim.TraceSink
 	StopOnViolation    bool
 	Decider            decision.Decider
+	Application        *apporacle.Config
 }
 
 // Envelope carries harness-owned causal identity separately from a pure Raft
@@ -105,6 +109,11 @@ func (c Config) validate() error {
 	if c.StorageLatency < 0 {
 		return fmt.Errorf("%w: negative storage latency", ErrInvalidConfig)
 	}
+	if c.Application != nil {
+		if err := c.Application.Validate(); err != nil {
+			return fmt.Errorf("%w: application profile: %v", ErrInvalidConfig, err)
+		}
+	}
 	return nil
 }
 
@@ -156,6 +165,7 @@ type process struct {
 	persistGeneration   uint64
 	crashAfterPersist   bool
 	sendSequence        uint64
+	application         *apporacle.Machine
 }
 
 // Cluster owns a deterministic reference Raft execution.
@@ -213,7 +223,7 @@ type clusterState struct {
 // event boundary. It is intentionally scoped to the built-in reference
 // harness and rejects traces, observers, and untagged callbacks.
 func (c *Cluster) CanonicalState() ([]byte, error) {
-	if c == nil || c.config.Trace != nil {
+	if c == nil || c.config.Trace != nil || c.config.Application != nil {
 		return nil, ErrUncacheableState
 	}
 	simulatorState, err := c.simulator.CanonicalState()
@@ -295,6 +305,10 @@ func NewPaused(config Config) (*Cluster, error) {
 	config.Members = slices.Clone(members)
 	config.Voters = slices.Clone(config.Voters)
 	config.Learners = slices.Clone(config.Learners)
+	if config.Application != nil {
+		application := *config.Application
+		config.Application = &application
+	}
 	initialMembership := raft.StableMembership(config.Voters, config.Learners)
 	if len(config.Voters) == 0 && len(config.Learners) == 0 {
 		initialMembership = raft.StableMembership(members, nil)
@@ -328,7 +342,11 @@ func NewPaused(config Config) (*Cluster, error) {
 		checker:   check.NewWithMembership(members, initialMembership),
 	}
 	for _, id := range members {
-		cluster.processes[id] = &process{up: true, incarnation: 1, random: rootRandom.Split()}
+		process := &process{up: true, incarnation: 1, random: rootRandom.Split()}
+		if config.Application != nil {
+			process.application = apporacle.New()
+		}
+		cluster.processes[id] = process
 	}
 	for _, id := range members {
 		id := id
@@ -406,6 +424,26 @@ func (c *Cluster) Store(id raft.NodeID) (Store, error) {
 	return process.store.clone(), nil
 }
 
+// ApplicationCommitment returns one node's portable application commitment.
+func (c *Cluster) ApplicationCommitment(id raft.NodeID) (apporacle.Commitment, error) {
+	process, ok := c.processes[id]
+	if !ok {
+		return apporacle.Commitment{}, fmt.Errorf("%w: %q", ErrUnknownNode, id)
+	}
+	if c.config.Application == nil {
+		return apporacle.Commitment{}, ErrApplicationDisabled
+	}
+	application := process.application
+	if application == nil {
+		var err error
+		application, err = recoverApplication(process.store)
+		if err != nil {
+			return apporacle.Commitment{}, err
+		}
+	}
+	return application.Commitment(), nil
+}
+
 // Leader returns the unique live leader. Multiple simultaneous leaders are
 // reported as no unique leader rather than silently selecting one.
 func (c *Cluster) Leader() (raft.NodeID, bool) {
@@ -444,6 +482,11 @@ func (c *Cluster) ProposeTo(id raft.NodeID, data []byte) error {
 	if process.node.Status().Role != raft.Leader {
 		return raft.ErrNotLeader
 	}
+	if c.config.Application != nil {
+		if _, err := apporacle.DecodeCommand(data); err != nil {
+			return fmt.Errorf("raftsim: invalid portable proposal: %w", err)
+		}
+	}
 	if err := c.submit(id, queuedInput{input: raft.Input{Kind: raft.InputProposal, Data: slices.Clone(data)}, incarnation: process.incarnation}); err != nil {
 		return err
 	}
@@ -454,6 +497,36 @@ func (c *Cluster) ProposeTo(id raft.NodeID, data []byte) error {
 // Snapshot compacts a live node through its current applied index. Data is the
 // application checkpoint corresponding to that index.
 func (c *Cluster) Snapshot(id raft.NodeID, data []byte) error {
+	if c.config.Application != nil {
+		return ErrApplicationSnapshot
+	}
+	return c.snapshot(id, data)
+}
+
+// SnapshotApplication compacts through the current applied index and binds the
+// generated portable checkpoint to that exact queued snapshot input.
+func (c *Cluster) SnapshotApplication(id raft.NodeID) error {
+	process, ok := c.processes[id]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownNode, id)
+	}
+	if c.config.Application == nil {
+		return ErrApplicationDisabled
+	}
+	if !process.up {
+		return fmt.Errorf("%w: %q", ErrNodeDown, id)
+	}
+	if process.application == nil {
+		return errors.New("raftsim: live portable application state is unavailable")
+	}
+	data, err := apporacle.EncodeCheckpoint(process.application.Checkpoint())
+	if err != nil {
+		return err
+	}
+	return c.snapshot(id, data)
+}
+
+func (c *Cluster) snapshot(id raft.NodeID, data []byte) error {
 	process, ok := c.processes[id]
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownNode, id)
@@ -610,6 +683,7 @@ func (c *Cluster) Crash(id raft.NodeID) error {
 	process.up = false
 	process.incarnation++
 	process.node = nil
+	process.application = nil
 	process.mailbox = nil
 	process.crashAfterPersist = false
 	process.sendSequence = 0
@@ -703,6 +777,13 @@ func (c *Cluster) CrashAfterNextPersist(id raft.NodeID) error {
 
 func (c *Cluster) start(id raft.NodeID) error {
 	process := c.processes[id]
+	if c.config.Application != nil {
+		application, err := recoverApplication(process.store)
+		if err != nil {
+			return fmt.Errorf("raftsim: recover portable application: %w", err)
+		}
+		process.application = application
+	}
 	node, err := raft.New(raft.Config{ID: id, Members: c.members, Voters: c.config.Voters, Learners: c.config.Learners, AppliedIndex: process.store.AppliedIndex}, process.store.State)
 	if err != nil {
 		return err
@@ -848,23 +929,97 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 			if effect.Entry.Index != process.store.AppliedIndex+1 {
 				return fmt.Errorf("%w: node=%q got=%d want=%d", ErrApplyOrder, id, effect.Entry.Index, process.store.AppliedIndex+1)
 			}
+			application := process.application
+			if c.config.Application != nil && application == nil {
+				return errors.New("raftsim: live portable application state is unavailable")
+			}
+			if application != nil {
+				if err := applyApplicationEntry(application, effect.Entry); err != nil {
+					return fmt.Errorf("raftsim: apply portable command: %w", err)
+				}
+			}
 			process.store.AppliedIndex = effect.Entry.Index
 			process.store.Applied = append(process.store.Applied, raft.CloneEntry(effect.Entry))
+			process.application = application
 		case raft.EffectInstallSnapshot:
 			if effect.Snapshot.LastIncludedIndex < process.store.AppliedIndex {
 				return fmt.Errorf("%w: node=%q snapshot=%d applied=%d", ErrApplyOrder, id, effect.Snapshot.LastIncludedIndex, process.store.AppliedIndex)
+			}
+			application := process.application
+			if c.config.Application != nil && application == nil {
+				return errors.New("raftsim: live portable application state is unavailable")
+			}
+			if application != nil {
+				checkpoint, err := apporacle.DecodeCheckpoint(effect.Snapshot.Data)
+				if err != nil {
+					return fmt.Errorf("raftsim: restore portable snapshot: %w", err)
+				}
+				restored, err := apporacle.Restore(checkpoint)
+				if err != nil {
+					return fmt.Errorf("raftsim: restore portable snapshot: %w", err)
+				}
+				if effect.Snapshot.LastIncludedIndex == process.store.AppliedIndex && restored.Commitment() != application.Commitment() {
+					return fmt.Errorf("%w: checkpoint conflicts at applied index %d", ErrApplicationSnapshot, process.store.AppliedIndex)
+				}
+				application = restored
 			}
 			process.store.AppliedIndex = effect.Snapshot.LastIncludedIndex
 			process.store.InstalledSnapshot = raft.CloneSnapshot(effect.Snapshot)
 			process.store.Applied = slices.DeleteFunc(process.store.Applied, func(entry raft.Entry) bool {
 				return entry.Index <= effect.Snapshot.LastIncludedIndex
 			})
+			process.application = application
 			c.trace(id, sim.TracePersistence, "snapshot_installed", effect.Snapshot)
 		default:
 			return fmt.Errorf("raftsim: unknown effect kind %d", effect.Kind)
 		}
 	}
 	return nil
+}
+
+func recoverApplication(store Store) (*apporacle.Machine, error) {
+	application := apporacle.New()
+	boundary := uint64(0)
+	if snapshot := store.State.Snapshot; snapshot.LastIncludedIndex > 0 && snapshot.LastIncludedIndex <= store.AppliedIndex {
+		checkpoint, err := apporacle.DecodeCheckpoint(snapshot.Data)
+		if err != nil {
+			return nil, err
+		}
+		application, err = apporacle.Restore(checkpoint)
+		if err != nil {
+			return nil, err
+		}
+		boundary = snapshot.LastIncludedIndex
+	}
+	last := boundary
+	for _, entry := range store.Applied {
+		if entry.Index <= boundary {
+			continue
+		}
+		if last == math.MaxUint64 || entry.Index != last+1 || entry.Index > store.AppliedIndex {
+			return nil, ErrApplyOrder
+		}
+		if err := applyApplicationEntry(application, entry); err != nil {
+			return nil, err
+		}
+		last = entry.Index
+	}
+	if last != store.AppliedIndex {
+		return nil, ErrApplyOrder
+	}
+	return application, nil
+}
+
+func applyApplicationEntry(application *apporacle.Machine, entry raft.Entry) error {
+	switch entry.Type {
+	case raft.EntryCommand:
+		_, err := application.ApplyEncoded(entry.Data)
+		return err
+	case raft.EntryNoop, raft.EntryConfigJoint, raft.EntryConfigFinal:
+		return nil
+	default:
+		return fmt.Errorf("%w: portable application entry type %d", apporacle.ErrInvalidEntry, entry.Type)
+	}
 }
 
 func (c *Cluster) drain(id raft.NodeID) {

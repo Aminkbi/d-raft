@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/decision"
 	rootraft "github.com/aminkbi/d-raft/raft"
@@ -64,6 +65,7 @@ type Config struct {
 	MaxSteps           uint64
 	StopOnViolation    bool
 	Decider            decision.Decider
+	Application        *apporacle.Config
 }
 
 // NetworkConfig is the stable subset shared with the root simulator.
@@ -105,6 +107,11 @@ func (c Config) validate() error {
 	}
 	if c.Network.MinLatency < 0 || c.Network.MaxLatency < c.Network.MinLatency || c.Network.LossProbability < 0 || c.Network.LossProbability > 1 || c.Network.LossProbability != c.Network.LossProbability {
 		return ErrInvalidConfig
+	}
+	if c.Application != nil {
+		if err := c.Application.Validate(); err != nil {
+			return fmt.Errorf("%w: application profile: %v", ErrInvalidConfig, err)
+		}
 	}
 	return nil
 }

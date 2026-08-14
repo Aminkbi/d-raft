@@ -30,6 +30,7 @@ writes, corruption, or operator behavior.
 | Crash and restart | supported |
 | Crash after durable write, before acknowledgement | supported |
 | Durable/application common safety checks | supported |
+| Portable KV state/history commitment | opt-in |
 | Adapter-local exact decision replay | supported |
 | Snapshots and compaction | rejected |
 | Learners or membership changes | rejected |
@@ -83,16 +84,20 @@ monotonicity, and snapshot/membership history. It does **not** claim election
 certificates, volatile/durable equality, election safety, or leader completeness
 from incomplete public `RawNode` evidence.
 
-`Cluster.Observation`, `DurableState`, `Status`, `AppliedEntries`, and
-`ChainBlocks` return deep-copied adapter-normalized views. The adapter-specific outcome
+`Cluster.Observation`, `DurableState`, `Status`, `AppliedEntries`,
+`ChainBlocks`, and `ApplicationCommitment` return deep-copied or immutable
+adapter-normalized views. The adapter-specific outcome
 digest additionally commits to the pending `Ready`, its persisted/ack phase,
 and queued inputs. Public RawNode state is not Markov-complete, so the canonical
 reference-state cache remains disabled for this adapter.
 
-The current Chain-of-Blocks is an adapter-local commitment to ordered applied
+The existing Chain-of-Blocks is an adapter-local commitment to ordered applied
 protocol-entry history. It includes Raft indexes, terms, types, and internal
-no-ops. It is not the planned portable application oracle and is not proof of
-Raft safety, linearizability, or application correctness.
+no-ops. The separate opt-in `d-raft.kv-command/v1` profile omits those protocol
+details and publishes `d-raft.kv-commitment/v1` state/history commitments. It
+is specified in the root [application-oracle document](../../APPLICATION_ORACLE.md).
+Neither commitment is proof of Raft safety, linearizability, or application
+correctness.
 
 ## Exact replay and portability
 

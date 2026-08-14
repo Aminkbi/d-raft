@@ -29,6 +29,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Verify portable application vectors independently
+        run: python3 tools/verify_apporacle.py --self-test
+
       - name: Test etcd/raft adapter
         working-directory: adapters/etcdraft
         run: go test ./...

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/check"
 	"github.com/aminkbi/d-raft/decision"
 	rootraft "github.com/aminkbi/d-raft/raft"
@@ -52,6 +53,7 @@ type process struct {
 	appliedIndex uint64
 	applied      []rootraft.Entry
 	chain        Chain
+	application  *apporacle.Machine
 	mailbox      []queuedInput
 	pending      *pendingReady
 	persistGen   uint64
@@ -87,6 +89,10 @@ func New(config Config) (*Cluster, error) {
 	}
 	if config.Decider == nil {
 		config.Decider = decision.NewSeedDecider(config.Seed)
+	}
+	if config.Application != nil {
+		application := *config.Application
+		config.Application = &application
 	}
 	members := slices.Clone(config.Members)
 	slices.Sort(members)
@@ -147,9 +153,19 @@ func (c *Cluster) newProcess(name rootraft.NodeID, prior *process) (*process, er
 			return nil, err
 		}
 		prior = &process{name: name, id: id, storage: storage, up: true, incarnation: 1, appliedIndex: 1}
+		if c.config.Application != nil {
+			prior.application = apporacle.New()
+		}
 		if err := prior.chain.Apply(rootraft.Entry{Index: 1, Term: 1, Type: rootraft.EntryNoop}); err != nil {
 			return nil, err
 		}
+	}
+	if c.config.Application != nil {
+		application, err := recoverApplication(prior)
+		if err != nil {
+			return nil, fmt.Errorf("etcdraft: recover portable application: %w", err)
+		}
+		prior.application = application
 	}
 	raw, err := etcdraft.NewRawNode(&etcdraft.Config{
 		ID: id, ElectionTick: 1_000_000_000, HeartbeatTick: 1, Storage: prior.storage, Applied: prior.appliedIndex,
@@ -211,6 +227,11 @@ func (c *Cluster) ProposeTo(name rootraft.NodeID, data []byte) error {
 	if len(data) == 0 {
 		return ErrInvalidProposal
 	}
+	if c.config.Application != nil {
+		if _, err := apporacle.DecodeCommand(data); err != nil {
+			return fmt.Errorf("etcdraft: invalid portable proposal: %w", err)
+		}
+	}
 	if process.raw.BasicStatus().RaftState != etcdraft.StateLeader {
 		return etcdraft.ErrProposalDropped
 	}
@@ -229,6 +250,7 @@ func (c *Cluster) Crash(name rootraft.NodeID) error {
 	process.up = false
 	process.incarnation++
 	process.raw = nil
+	process.application = nil
 	process.mailbox = nil
 	process.pending = nil
 	process.crashAfterWrite = false
@@ -513,12 +535,47 @@ func (c *Cluster) applyEntry(process *process, source *pb.Entry) error {
 	if entry.Index != process.appliedIndex+1 {
 		return fmt.Errorf("%w: applied index %d after %d", ErrPersistenceOrder, entry.Index, process.appliedIndex)
 	}
+	if process.chain.Index() != process.appliedIndex {
+		return ErrOracleOrder
+	}
+	application := process.application
+	if c.config.Application != nil && application == nil {
+		return errors.New("etcdraft: live portable application state is unavailable")
+	}
+	if application != nil && entry.Type == rootraft.EntryCommand {
+		if _, err := application.ApplyEncoded(entry.Data); err != nil {
+			return fmt.Errorf("etcdraft: apply portable command: %w", err)
+		}
+	}
 	if err := process.chain.Apply(entry); err != nil {
 		return err
 	}
 	process.appliedIndex = entry.Index
 	process.applied = append(process.applied, entry)
+	process.application = application
 	return nil
+}
+
+func recoverApplication(process *process) (*apporacle.Machine, error) {
+	application := apporacle.New()
+	last := uint64(1)
+	for _, entry := range process.applied {
+		if last == math.MaxUint64 || entry.Index != last+1 || entry.Index > process.appliedIndex {
+			return nil, ErrPersistenceOrder
+		}
+		if entry.Type == rootraft.EntryCommand {
+			if _, err := application.ApplyEncoded(entry.Data); err != nil {
+				return nil, err
+			}
+		} else if entry.Type != rootraft.EntryNoop {
+			return nil, fmt.Errorf("%w: portable application entry type %d", apporacle.ErrInvalidEntry, entry.Type)
+		}
+		last = entry.Index
+	}
+	if last != process.appliedIndex {
+		return nil, ErrPersistenceOrder
+	}
+	return application, nil
 }
 
 func (c *Cluster) send(process *process, source *pb.Message) error {
