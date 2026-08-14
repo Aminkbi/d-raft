@@ -35,6 +35,10 @@ The manifest and every patch are SHA-256 pinned. See
 [`../../../MUTANTS.md`](../../../MUTANTS.md) for runner semantics, result
 classification, and the trust boundary.
 
+The checked-in [`results/linux-amd64.json`](results/linux-amd64.json) was
+produced from a clean checkout with the clean committed runner under Go 1.26.6.
+It records three safety kills and three conformance kills.
+
 This is a deliberately seeded fault set used to test activation and attribution.
 It is not sampled from production incidents and must not be presented as a
 representative mutation score for Raft implementations in general.

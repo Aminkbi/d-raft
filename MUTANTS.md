@@ -88,6 +88,13 @@ bounded probe”; it is not evidence that the mutant is correct. Conformance
 kills are not safety-checker findings. Seeded faults are controlled test cases,
 not a representative distribution of production Raft bugs.
 
+The published v1 Linux/amd64 result is
+[`corpus/mutants/v1/results/linux-amd64.json`](corpus/mutants/v1/results/linux-amd64.json).
+All six baselines pass and all six mutants activate under Go 1.26.6. The result
+contains three `safety_kill` entries and three `conformance_kill` entries, with
+no survivors, unattributed failures, or operational errors. The denominator is
+six reviewed synthetic mutants; it is not a production-defect sample.
+
 ## Trust boundary
 
 Detached worktrees protect the caller's checkout from ordinary patch changes,

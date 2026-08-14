@@ -27,8 +27,10 @@ The project is created and maintained by
 > implemented for a declared fixed-membership capability subset. A versioned,
 > portable binary KV application oracle now produces independently checkable
 > state/history commitments in both adapters, including reference snapshot
-> recovery. An isolated, repository-pinned seeded-mutant runner is implemented;
-> the versioned mutant corpus and comparative evaluation remain active work.
+> recovery. A versioned six-fault corpus and isolated, repository-pinned
+> runner are implemented with a clean Go 1.26.6 result: three checker-backed
+> safety kills and three separately reported conformance kills. Cross-adapter
+> comparative evaluation remains active work.
 
 ## Why d-raft?
 

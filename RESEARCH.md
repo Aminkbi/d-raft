@@ -104,7 +104,7 @@ violation witness.
 - [x] Canonical reference frontiers and collision-safe bounded state caching
 - [x] Experimental production-core Raft adapter with declared capability boundaries
 - [x] Portable application-state oracle and cross-adapter commitment surface
-- [ ] Versioned seeded mutant corpus and isolated execution harness
+- [x] Versioned seeded mutant corpus and isolated execution harness
 - [ ] Comparative evaluation, public counterexample corpus, and archival release
 
 The completed membership milestone is deliberately scoped to role changes over

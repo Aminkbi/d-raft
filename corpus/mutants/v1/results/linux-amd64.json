@@ -1,0 +1,169 @@
+{
+  "schema": "d-raft.mutant-result/v1",
+  "manifest_schema": "d-raft.mutant/v1",
+  "manifest_sha256": "f3ca008e6173451b48a135864902ed1a3f2071fd97af332ff783e3250851167e",
+  "repository": "github.com/aminkbi/d-raft",
+  "base_commit": "9304bcd0ba7f5cc470ac67149bb9b96bc1be6523",
+  "base_tree": "94ecc4b31e530fd411a156b41cc09356d8777171",
+  "environment": {
+    "runner_revision": "957df716c0cfc5ef8b86d8c628d550acf88be230",
+    "runner_modified": false,
+    "target_head": "957df716c0cfc5ef8b86d8c628d550acf88be230",
+    "target_modified": false,
+    "go_version": "go1.26.6",
+    "goos": "linux",
+    "goarch": "amd64"
+  },
+  "results": [
+    {
+      "id": "duplicate-vote-count",
+      "package": "./raft",
+      "test": "TestMutantDuplicateVoteCount",
+      "invariant": {
+        "name": "raft/election-certificate",
+        "class": "safety"
+      },
+      "activation_sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c",
+      "mutation_sha256": "033bb5137f949cd314a65da2b54bdcbf5c128ddf19233646b06201024a9e4da9",
+      "classification": "safety_kill",
+      "detail": "test failed with the targeted invariant marker",
+      "baseline": {
+        "exit_code": 0,
+        "duration_ms": 4078,
+        "output": "=== RUN   TestMutantDuplicateVoteCount\n    mutant_activation_test.go:63: DRAFT_MUTANT_ACTIVATED:duplicate-vote-count\n--- PASS: TestMutantDuplicateVoteCount (0.00s)\nPASS\nok  \tgithub.com/aminkbi/d-raft/raft\t0.002s\n",
+        "output_truncated": false
+      },
+      "mutant": {
+        "exit_code": 1,
+        "duration_ms": 457,
+        "output": "=== RUN   TestMutantDuplicateVoteCount\n    mutant_activation_test.go:63: DRAFT_MUTANT_ACTIVATED:duplicate-vote-count\n    mutant_activation_test.go:89: DRAFT_MUTANT_INVARIANT:raft/election-certificate\n    mutant_activation_test.go:89: one durable peer vote was counted twice\n--- FAIL: TestMutantDuplicateVoteCount (0.00s)\nFAIL\nFAIL\tgithub.com/aminkbi/d-raft/raft\t0.002s\nFAIL\n",
+        "output_truncated": false
+      }
+    },
+    {
+      "id": "ignored-higher-term",
+      "package": "./raft",
+      "test": "TestMutantIgnoredHigherTerm",
+      "invariant": {
+        "name": "raft/higher-term-stepdown",
+        "class": "conformance"
+      },
+      "activation_sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c",
+      "mutation_sha256": "e05f4ea59d9192306b70e0d1c4eb115e746962de21add7c72111533a983665ad",
+      "classification": "conformance_kill",
+      "detail": "test failed with the targeted invariant marker",
+      "baseline": {
+        "exit_code": 0,
+        "duration_ms": 4103,
+        "output": "=== RUN   TestMutantIgnoredHigherTerm\n    mutant_activation_test.go:93: DRAFT_MUTANT_ACTIVATED:ignored-higher-term\n--- PASS: TestMutantIgnoredHigherTerm (0.00s)\nPASS\nok  \tgithub.com/aminkbi/d-raft/raft\t0.003s\n",
+        "output_truncated": false
+      },
+      "mutant": {
+        "exit_code": 1,
+        "duration_ms": 464,
+        "output": "=== RUN   TestMutantIgnoredHigherTerm\n    mutant_activation_test.go:93: DRAFT_MUTANT_ACTIVATED:ignored-higher-term\n    mutant_activation_test.go:116: DRAFT_MUTANT_INVARIANT:raft/higher-term-stepdown\n    mutant_activation_test.go:116: leader ignored a higher-term vote request\n--- FAIL: TestMutantIgnoredHigherTerm (0.00s)\nFAIL\nFAIL\tgithub.com/aminkbi/d-raft/raft\t0.002s\nFAIL\n",
+        "output_truncated": false
+      }
+    },
+    {
+      "id": "non-persisted-vote",
+      "package": "./raft",
+      "test": "TestMutantNonPersistedVote",
+      "invariant": {
+        "name": "raft/election-certificate",
+        "class": "safety"
+      },
+      "activation_sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c",
+      "mutation_sha256": "26c825dbbc52f1404d9d012ac00820c4cc71680174f13ba50c5dd256fe97ac40",
+      "classification": "safety_kill",
+      "detail": "test failed with the targeted invariant marker",
+      "baseline": {
+        "exit_code": 0,
+        "duration_ms": 3912,
+        "output": "=== RUN   TestMutantNonPersistedVote\n    mutant_activation_test.go:21: DRAFT_MUTANT_ACTIVATED:non-persisted-vote\n--- PASS: TestMutantNonPersistedVote (0.00s)\nPASS\nok  \tgithub.com/aminkbi/d-raft/raft\t0.002s\n",
+        "output_truncated": false
+      },
+      "mutant": {
+        "exit_code": 1,
+        "duration_ms": 431,
+        "output": "=== RUN   TestMutantNonPersistedVote\n    mutant_activation_test.go:21: DRAFT_MUTANT_ACTIVATED:non-persisted-vote\n    mutant_activation_test.go:59: DRAFT_MUTANT_INVARIANT:raft/election-certificate\n    mutant_activation_test.go:59: vote response escaped before its durable write\n--- FAIL: TestMutantNonPersistedVote (0.00s)\nFAIL\nFAIL\tgithub.com/aminkbi/d-raft/raft\t0.002s\nFAIL\n",
+        "output_truncated": false
+      }
+    },
+    {
+      "id": "snapshot-before-persistence",
+      "package": "./raft",
+      "test": "TestMutantSnapshotBeforePersistence",
+      "invariant": {
+        "name": "raft/snapshot-persistence-order",
+        "class": "conformance"
+      },
+      "activation_sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c",
+      "mutation_sha256": "91975c2448face929d22280a5c27eee299f10b26df0f2ad78116d7cf0abbb157",
+      "classification": "conformance_kill",
+      "detail": "test failed with the targeted invariant marker",
+      "baseline": {
+        "exit_code": 0,
+        "duration_ms": 4014,
+        "output": "=== RUN   TestMutantSnapshotBeforePersistence\n    mutant_activation_test.go:143: DRAFT_MUTANT_ACTIVATED:snapshot-before-persistence\n--- PASS: TestMutantSnapshotBeforePersistence (0.00s)\nPASS\nok  \tgithub.com/aminkbi/d-raft/raft\t0.002s\n",
+        "output_truncated": false
+      },
+      "mutant": {
+        "exit_code": 1,
+        "duration_ms": 446,
+        "output": "=== RUN   TestMutantSnapshotBeforePersistence\n    mutant_activation_test.go:143: DRAFT_MUTANT_ACTIVATED:snapshot-before-persistence\n    mutant_activation_test.go:164: DRAFT_MUTANT_INVARIANT:raft/snapshot-persistence-order\n    mutant_activation_test.go:164: snapshot installation escaped before durable persistence\n--- FAIL: TestMutantSnapshotBeforePersistence (0.00s)\nFAIL\nFAIL\tgithub.com/aminkbi/d-raft/raft\t0.002s\nFAIL\n",
+        "output_truncated": false
+      }
+    },
+    {
+      "id": "stale-heartbeat-acceptance",
+      "package": "./raft",
+      "test": "TestMutantStaleHeartbeatAcceptance",
+      "invariant": {
+        "name": "raft/stale-heartbeat-rejection",
+        "class": "conformance"
+      },
+      "activation_sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c",
+      "mutation_sha256": "74ec9422b2dc263b51eb4727d28e6d9dfea0eadc7a5fd2d4fc6f65fe272ed90f",
+      "classification": "conformance_kill",
+      "detail": "test failed with the targeted invariant marker",
+      "baseline": {
+        "exit_code": 0,
+        "duration_ms": 3890,
+        "output": "=== RUN   TestMutantStaleHeartbeatAcceptance\n    mutant_activation_test.go:120: DRAFT_MUTANT_ACTIVATED:stale-heartbeat-acceptance\n--- PASS: TestMutantStaleHeartbeatAcceptance (0.00s)\nPASS\nok  \tgithub.com/aminkbi/d-raft/raft\t0.003s\n",
+        "output_truncated": false
+      },
+      "mutant": {
+        "exit_code": 1,
+        "duration_ms": 490,
+        "output": "=== RUN   TestMutantStaleHeartbeatAcceptance\n    mutant_activation_test.go:120: DRAFT_MUTANT_ACTIVATED:stale-heartbeat-acceptance\n    mutant_activation_test.go:139: DRAFT_MUTANT_INVARIANT:raft/stale-heartbeat-rejection\n    mutant_activation_test.go:139: stale heartbeat reset the timer and received success\n--- FAIL: TestMutantStaleHeartbeatAcceptance (0.00s)\nFAIL\nFAIL\tgithub.com/aminkbi/d-raft/raft\t0.002s\nFAIL\n",
+        "output_truncated": false
+      }
+    },
+    {
+      "id": "unsafe-one-step-reconfiguration",
+      "package": "./raft",
+      "test": "TestMutantUnsafeOneStepReconfiguration",
+      "invariant": {
+        "name": "raft/membership-transition",
+        "class": "safety"
+      },
+      "activation_sha256": "0db3f76a267ca90f504829adfc55b104704535a06f2ba9e119e3a60e90c8997c",
+      "mutation_sha256": "d63c8af6d10ca7cc06d4d96da417ccbe7797b2851f523daf33a1533be880fbbc",
+      "classification": "safety_kill",
+      "detail": "test failed with the targeted invariant marker",
+      "baseline": {
+        "exit_code": 0,
+        "duration_ms": 3807,
+        "output": "=== RUN   TestMutantUnsafeOneStepReconfiguration\n    mutant_activation_test.go:168: DRAFT_MUTANT_ACTIVATED:unsafe-one-step-reconfiguration\n--- PASS: TestMutantUnsafeOneStepReconfiguration (0.00s)\nPASS\nok  \tgithub.com/aminkbi/d-raft/raft\t0.002s\n",
+        "output_truncated": false
+      },
+      "mutant": {
+        "exit_code": 1,
+        "duration_ms": 417,
+        "output": "=== RUN   TestMutantUnsafeOneStepReconfiguration\n    mutant_activation_test.go:168: DRAFT_MUTANT_ACTIVATED:unsafe-one-step-reconfiguration\n    mutant_activation_test.go:193: DRAFT_MUTANT_INVARIANT:raft/membership-transition\n    mutant_activation_test.go:193: stable membership was replaced without a joint phase\n--- FAIL: TestMutantUnsafeOneStepReconfiguration (0.00s)\nFAIL\nFAIL\tgithub.com/aminkbi/d-raft/raft\t0.002s\nFAIL\n",
+        "output_truncated": false
+      }
+    }
+  ]
+}
