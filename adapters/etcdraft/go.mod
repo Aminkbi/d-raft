@@ -7,7 +7,7 @@ toolchain go1.26.6
 require (
 	github.com/aminkbi/d-raft v0.0.0
 	go.etcd.io/raft/v3 v3.7.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 replace github.com/aminkbi/d-raft => ../..
