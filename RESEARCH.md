@@ -84,8 +84,8 @@ violation witness.
 - [x] Semantic decision recording and exact replay
 - [x] Payload-lossless observational trace decoding
 - [x] Versioned, self-describing run artifacts and `run`/`replay`/`inspect` CLI
-- [ ] Prefix replay and bounded depth-first choice exploration
-- [ ] Fingerprint-preserving semantic delta debugging and domain shrinkers
+- [x] Prefix replay and bounded depth-first choice exploration
+- [x] Fingerprint-preserving semantic delta debugging and domain shrinkers
 - [ ] Snapshot installation and safe log compaction
 - [ ] Joint-consensus membership changes and learners
 - [ ] Production Raft adapter with declared capability boundaries

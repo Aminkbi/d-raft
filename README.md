@@ -18,9 +18,10 @@ The project is created and maintained by
 > **Research status:** the deterministic kernel, durable reference Raft model,
 > cluster harness, safety checker, observational trace decoder, and exact
 > semantic decision replay are implemented. Self-describing run artifacts and
-> the `run`/`replay`/`inspect` CLI are also usable. Exploration,
-> counterexample minimization, snapshots, joint consensus, and production
-> adapters remain active research work.
+> the research CLI are also usable. Bounded prefix exploration and
+> fingerprint-preserving semantic minimization are implemented. Snapshots,
+> joint consensus, production adapters, and comparative evaluation remain
+> active research work.
 
 ## Why d-raft?
 
@@ -51,7 +52,9 @@ plan.
 | `trace` | Bounded, line-aware, payload-lossless decoder for known `d-raft.trace/v1` fields |
 | `artifact` | Strict, self-describing `d-raft.run/v1` artifacts with scenarios, configuration, environment, tape, outcome, digest, and witnesses |
 | `experiment` | Clean-run execution of versioned scenarios and external crash, restart, partition, heal, and proposal actions |
-| `cmd/draft` | `run`, `replay`, and `inspect` workflow for research artifacts |
+| `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
+| `explore` | Clean-rerun bounded DFS over semantic choice prefixes with deterministic suffix completion |
+| `minimize` | Scenario ddmin, sparse semantic guidance reduction, and domain-aware selection shrinking |
 
 The root module is dependency-free and uses no wall-clock sleeps or background
 goroutines. It targets Go 1.26 and declares the current Go 1.26.6 toolchain.
@@ -156,6 +159,8 @@ go build -o draft ./cmd/draft
 ./draft run --seed 42 --duration 2s --out run.json
 ./draft inspect run.json
 ./draft replay run.json
+./draft explore --depth 6 --max-runs 1000
+./draft minimize --out minimized.json failing.json
 ```
 
 `draft replay` starts from a clean cluster, consumes the stored choice tape,
@@ -168,8 +173,9 @@ partial result. Artifacts remain private (`0600`) by default.
 The current built-in scenario is a steady fixed-membership cluster. The schema
 already represents scheduled proposals, partitions, healing, crashes, and
 restarts, including the crash-after-persistence-before-acknowledgement boundary;
-named fault scenarios and exploration commands are the next CLI
-milestone. See [ARTIFACTS.md](ARTIFACTS.md).
+named fault scenarios, state caching, and production adapters are later
+milestones. See [ARTIFACTS.md](ARTIFACTS.md),
+[EXPLORATION.md](EXPLORATION.md), and [MINIMIZATION.md](MINIMIZATION.md).
 
 ## Observational traces
 

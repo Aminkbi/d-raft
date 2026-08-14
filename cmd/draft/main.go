@@ -16,6 +16,8 @@ import (
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/decision"
 	"github.com/aminkbi/d-raft/experiment"
+	"github.com/aminkbi/d-raft/explore"
+	"github.com/aminkbi/d-raft/minimize"
 	"github.com/aminkbi/d-raft/raft"
 	"github.com/aminkbi/d-raft/raftsim"
 )
@@ -38,6 +40,10 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		return replayCommand(args[1:], stdout, stderr)
 	case "inspect":
 		return inspectCommand(args[1:], stdout, stderr)
+	case "explore":
+		return exploreCommand(args[1:], stdout, stderr)
+	case "minimize":
+		return minimizeCommand(args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "draft %s (%s)\n", version, artifact.SchemaVersion)
 		return 0
@@ -49,6 +55,89 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+}
+
+func exploreCommand(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("draft explore", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	output := flags.String("out", "d-raft-counterexample.json", "first violation artifact path")
+	seed := flags.Uint64("seed", 1, "fallback semantic decision seed")
+	duration := flags.Duration("duration", time.Second, "virtual run duration")
+	membersText := flags.String("members", "a,b,c", "comma-separated member IDs")
+	loss := flags.Float64("loss", 0.1, "network loss probability")
+	maxSteps := flags.Uint64("max-steps", 100_000, "maximum simulator events per run")
+	maxRuns := flags.Int("max-runs", 1_000, "maximum clean reruns")
+	depth := flags.Int("depth", 6, "systematic prefix depth")
+	branches := flags.Int("branches", 3, "maximum branches per choice")
+	rangeSamples := flags.Int("range-samples", 3, "range samples: 1=min, 2=min/max, 3=min/mid/max")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "draft explore: unexpected positional arguments")
+		return 2
+	}
+	members, err := parseMembers(*membersText)
+	if err != nil {
+		reportError(stderr, "draft explore", err)
+		return 2
+	}
+	config := raftsim.DefaultConfig(members...)
+	config.Seed = *seed
+	config.Network.LossProbability = *loss
+	scenario := artifact.Scenario{ID: "steady-cluster-exploration", Version: "1", DurationNS: int64(*duration), MaxSteps: *maxSteps}
+	configuration := artifact.ConfigurationFrom(config)
+	runner := func(decider decision.Decider) (artifact.Outcome, error) {
+		return experiment.Execute(scenario, configuration, decider)
+	}
+	result, err := explore.DFS(runner, explore.Bounds{MaxRuns: *maxRuns, MaxDepth: *depth, MaxBranchesPerChoice: *branches, RangeSamples: *rangeSamples, FallbackSeed: *seed, StopOnViolation: true})
+	if err != nil {
+		reportError(stderr, "draft explore", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "runs: %d\nopen choices: %d\ncompleted: %d\npruned: %d\ndepth-bound suffixes: %d\nsampled domains: %d\nviolations: %d\nrun-budget truncated: %t\n", result.Runs, result.OpenChoices, result.Completed, result.PrunedPrefixes, result.DepthBoundHits, result.SampledDomains, result.ViolatingRuns, result.Truncated)
+	if result.FirstViolation == nil {
+		return 0
+	}
+	run := artifact.Run{Schema: artifact.SchemaVersion, Scenario: scenario, Adapter: artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterV1}, Configuration: configuration, Reproducibility: artifact.NewReproducibility(*seed), Decisions: result.FirstViolation.Tape, Outcome: result.FirstViolation.Outcome}
+	if err := writeArtifact(*output, run); err != nil {
+		reportError(stderr, "draft explore: write counterexample", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "counterexample: %s\n", safeText(*output, 4096))
+	return 1
+}
+
+func minimizeCommand(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("draft minimize", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	output := flags.String("out", "d-raft-minimized.json", "minimized artifact path")
+	maxRuns := flags.Int("max-runs", 1_000, "maximum replay attempts")
+	fallbackSeed := flags.Uint64("fallback-seed", 0, "seed for choices absent from reduced guidance")
+	target := flags.String("target", "", "violation fingerprint; defaults to the first witness")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: draft minimize [options] ARTIFACT")
+		return 2
+	}
+	input, err := readArtifact(flags.Arg(0))
+	if err != nil {
+		reportError(stderr, "draft minimize", err)
+		return 2
+	}
+	result, err := minimize.Artifact(input, minimize.Bounds{MaxRuns: *maxRuns, FallbackSeed: *fallbackSeed, TargetFingerprint: *target})
+	if err != nil {
+		reportError(stderr, "draft minimize", err)
+		return 2
+	}
+	if err := writeArtifact(*output, result.Run); err != nil {
+		reportError(stderr, "draft minimize: write artifact", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "wrote %s\nruns: %d\nactions removed: %d\nguidance removed: %d\nselections shrunk: %d\ntruncated: %t\n", safeText(*output, 4096), result.Runs, result.ActionsRemoved, result.GuidanceEntriesRemoved, result.SelectionsShrunk, result.Truncated)
+	return 0
 }
 
 func runCommand(args []string, stdout, stderr io.Writer) int {
@@ -278,7 +367,7 @@ func writeArtifact(path string, run artifact.Run) (err error) {
 
 func usage(writer io.Writer) {
 	fmt.Fprintln(writer, "d-raft semantic counterexample research CLI")
-	fmt.Fprintln(writer, "usage: draft <run|replay|inspect|version> [options]")
+	fmt.Fprintln(writer, "usage: draft <run|explore|replay|minimize|inspect|version> [options]")
 }
 
 func reportError(writer io.Writer, prefix string, err error) {

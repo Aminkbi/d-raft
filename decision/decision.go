@@ -355,3 +355,6 @@ func cloneTape(tape Tape) Tape {
 	}
 	return result
 }
+
+// CloneTape returns an independent deep copy of a semantic tape.
+func CloneTape(tape Tape) Tape { return cloneTape(tape) }

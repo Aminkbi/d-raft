@@ -87,6 +87,9 @@ func executeScheduled(cluster *raftsim.Cluster, scenario artifact.Scenario) (art
 	if actionErr != nil {
 		runErr = actionErr
 	}
+	if errors.Is(runErr, decision.ErrOpenChoice) {
+		return artifact.Outcome{}, runErr
+	}
 
 	violations := cluster.Violations()
 	digest, digestErr := snapshotDigest(cluster, violations)

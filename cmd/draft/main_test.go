@@ -59,3 +59,11 @@ func TestCLIRejectsDuplicateMembers(t *testing.T) {
 		t.Fatalf("code=%d output=%q", code, output.String())
 	}
 }
+
+func TestExploreCommandIsBounded(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := execute([]string{"explore", "--duration", "100ms", "--max-runs", "10", "--depth", "1"}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), "runs:") || !strings.Contains(stdout.String(), "run-budget truncated:") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
