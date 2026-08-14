@@ -54,6 +54,10 @@ The repository currently contains:
 10. A versioned binary KV application oracle with strict canonical commands,
     self-verifying checkpoints, reference snapshot continuity, and compact
     adapter-neutral history/state commitments in both adapters.
+11. Strict adapter-neutral semantic plans with source-tape provenance,
+    bilateral capability negotiation, explicit projection fidelity, exact
+    target-local replay tapes for successful projections, successful-prefix
+    evidence for failed projections, and axis-separated normalized comparisons.
 
 The reference model is a fixture and oracle for experiments, not itself the
 claimed research novelty.
@@ -105,6 +109,7 @@ violation witness.
 - [x] Experimental production-core Raft adapter with declared capability boundaries
 - [x] Portable application-state oracle and cross-adapter commitment surface
 - [x] Versioned seeded mutant corpus and isolated execution harness
+- [x] Adapter-neutral semantic plans and normalized cross-adapter execution
 - [ ] Comparative evaluation, public counterexample corpus, and archival release
 
 The completed membership milestone is deliberately scoped to role changes over

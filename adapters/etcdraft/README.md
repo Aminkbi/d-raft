@@ -38,7 +38,8 @@ writes, corruption, or operator behavior.
 | `PreVote`, `CheckQuorum`, lease reads, transfer | rejected |
 | Asynchronous storage writes | rejected |
 | Canonical exploration cache | unsupported |
-| Cross-adapter exact decision tapes | unsupported |
+| Portable semantic-plan projection | supported with explicit exact/partial/failed accounting |
+| Cross-adapter exact decision tapes | unsupported; successful targets record local exact tapes and failures record exact successful prefixes |
 
 Unsupported scenarios are rejected before cluster construction and before any
 semantic decision is consumed. `SupportedCapabilities()` is the machine-readable
@@ -103,13 +104,17 @@ correctness.
 
 Exact tapes are local to this adapter and upstream version. Network choice
 contexts contain deterministic protobuf bytes and sender-local sequence
-numbers, so a reference-adapter tape is not directly portable here. Later
-cross-adapter evaluation uses an adapter-neutral semantic fault plan and
-compares common invariant IDs, versioned neutral witness projections, and
-normalized application outcomes,
+numbers, so a reference-adapter tape is not directly portable here. The
+`d-raft.semantic-plan/v1` projection instead uses node/incarnation/generation
+or endpoint/incarnation/send-sequence keys and reports unmatched source and
+additional target choices. Cross-adapter evaluation compares negotiated common
+invariant IDs and normalized application outcomes,
 not identical leaders, terms, timings, message counts, steps, or observation
 digests. Current checker fingerprints are adapter-local because their canonical
 evidence can include implementation-specific terms and indexes.
+
+See the root [portable semantic-plan contract](../../SEMANTIC_PLANS.md) for
+strict schemas, eligibility rules, source provenance, and comparison claims.
 
 ## Use
 
@@ -123,7 +128,21 @@ go vet ./...
 go build -o draft-etcd ./cmd/draft-etcd
 ./draft-etcd run --seed 42 --duration 2s --out run.json
 ./draft-etcd replay run.json
+
+go build -o draft-cross ./cmd/draft-cross
+./draft-cross derive --source-run source-run.json --out semantic-plan.json
+./draft-cross run --plan semantic-plan.json --source-run source-run.json --out cross-result
+./draft-cross verify --plan semantic-plan.json --source-run source-run.json --in cross-result
 ```
+
+The cross runner replay-verifies the source before deriving or running. A run
+publishes seven private result files and a `cross-result.manifest.json` commit
+marker last. `verify` checks every exact-byte hash and binding, exactly replays
+successful adapter-local tapes, validates failed projections as exact prefixes
+plus deterministic re-execution, and recomputes both normalized outcomes and
+the final comparison. If a crash leaves data files without the manifest,
+inspect the prefix and use `./draft-cross recover --in cross-result`; recovery
+refuses a committed bundle.
 
 Build the binary from a Git checkout before publishing artifacts so Go embeds
 the VCS revision and dirty-tree flag. `go run` from the nested module can report

@@ -90,11 +90,19 @@ authenticity; sign release artifacts and checksums separately.
 
 ## Current portability boundary
 
-The current built-in adapter is `d-raft/reference@3`. Cross-implementation replay
-will require an adapter to map its batching, timer, storage, and membership
-semantics onto the common choice model. A single-threaded artifact cannot
-represent production data races, and the current atomic store does not model
-torn writes or corruption.
+An exact `d-raft.run/v3` tape remains local to its adapter and version. The
+separate `d-raft.semantic-plan/v1` schema maps the portable fixed-membership
+subset onto both `d-raft/reference@3` and `go.etcd.io/raft/v3@3.7.0+d-raft.1`.
+It reports exact, partial, or failed projection. Successful projections record
+a fresh exact local tape; failed projections retain the exact successful
+prefix and require deterministic re-execution to reproduce the rejected
+choice. It never claims that batching, messages, terms, indexes, or
+adapter-local observation digests are identical.
+
+The associated capability, semantic-execution, normalized-outcome, and
+normalized-comparison schemas are documented in [SEMANTIC_PLANS.md](SEMANTIC_PLANS.md).
+A single-threaded artifact still cannot represent production data races, and
+the current atomic store does not model torn writes or corruption.
 
 Seeds in the run header are decimal JSON strings so full-width values survive
 common JSON tooling. The embedded, already-published decision-v1 schema and

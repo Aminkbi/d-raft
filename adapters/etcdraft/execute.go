@@ -188,9 +188,10 @@ func cloneAction(action artifact.Action) artifact.Action {
 	action.Data = slices.Clone(action.Data)
 	action.Voters = slices.Clone(action.Voters)
 	action.Learners = slices.Clone(action.Learners)
-	action.Groups = make([][]rootraft.NodeID, len(action.Groups))
-	for index := range action.Groups {
-		action.Groups[index] = slices.Clone(action.Groups[index])
+	groups := action.Groups
+	action.Groups = make([][]rootraft.NodeID, len(groups))
+	for index := range groups {
+		action.Groups[index] = slices.Clone(groups[index])
 	}
 	return action
 }

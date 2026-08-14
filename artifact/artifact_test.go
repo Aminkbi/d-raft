@@ -47,6 +47,30 @@ func TestArtifactDecoderRejectsUnknownAndTrailingFields(t *testing.T) {
 	}
 }
 
+func TestArtifactDecoderRejectsDuplicateObjectNames(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	if err := Encode(&output, validRun()); err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]string{
+		"top level": strings.Replace(output.String(),
+			`"schema":"`+SchemaVersion+`",`,
+			`"schema":"`+SchemaVersion+`","schema":"`+SchemaVersion+`",`, 1),
+		"nested": strings.Replace(output.String(),
+			`"scenario":{"id":"steady",`,
+			`"scenario":{"id":"shadow","id":"steady",`, 1),
+	}
+	for name, document := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Decode(strings.NewReader(document)); !errors.Is(err, ErrInvalidArtifact) {
+				t.Fatalf("duplicate field error = %v", err)
+			}
+		})
+	}
+}
+
 func TestArtifactRejectsInvalidTape(t *testing.T) {
 	t.Parallel()
 

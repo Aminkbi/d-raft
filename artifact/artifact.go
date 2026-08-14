@@ -19,6 +19,7 @@ import (
 	sim "github.com/aminkbi/d-raft"
 	"github.com/aminkbi/d-raft/check"
 	"github.com/aminkbi/d-raft/decision"
+	"github.com/aminkbi/d-raft/internal/strictjson"
 	"github.com/aminkbi/d-raft/raft"
 	"github.com/aminkbi/d-raft/raftsim"
 )
@@ -564,6 +565,9 @@ func Decode(reader io.Reader) (Run, error) {
 }
 
 func decodeStrictJSON(data []byte, destination any) error {
+	if err := strictjson.RejectDuplicateNames(data); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
@@ -589,6 +593,9 @@ func decodeWithLimit(reader io.Reader, maximum int) (Run, error) {
 	}
 	if len(data) > maximum {
 		return Run{}, ErrArtifactTooLarge
+	}
+	if err := strictjson.RejectDuplicateNames(data); err != nil {
+		return Run{}, fmt.Errorf("%w: %v", ErrInvalidArtifact, err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

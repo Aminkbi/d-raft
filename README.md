@@ -29,8 +29,11 @@ The project is created and maintained by
 > state/history commitments in both adapters, including reference snapshot
 > recovery. A versioned six-fault corpus and isolated, repository-pinned
 > runner are implemented with a clean Go 1.26.6 result: three checker-backed
-> safety kills and three separately reported conformance kills. Cross-adapter
-> comparative evaluation remains active work.
+> safety kills and three separately reported conformance kills. Strict
+> adapter-neutral semantic plans, bilateral capability preflight, projection
+> accounting, normalized outcomes/comparisons, source-provenance verification,
+> and a two-adapter research CLI are implemented. The public comparative corpus
+> and report remain active work.
 
 ## Why d-raft?
 
@@ -61,6 +64,7 @@ plan.
 | `trace` | Bounded, line-aware, payload-lossless decoder for known `d-raft.trace/v1` fields |
 | `artifact` | Strict, self-describing `d-raft.run/v3` artifacts with scenarios, voter/learner roles, configuration actions, environment, tape, outcome, digest, and witnesses; legacy v1/v2 decoding remains available |
 | `apporacle` | Strict binary KV commands, canonical checkpoints, known-answer vectors, and adapter-neutral state/history commitments |
+| `semanticplan` | Strict portable plan/capability/execution schemas, plan-aware projection proof checks, negotiated invariant universes, normalized outcomes, and outcome-bound comparisons |
 | `experiment` | Clean-run execution of versioned scenarios and proposal, snapshot, begin/finalize membership, crash/restart, partition, and heal actions |
 | `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
 | `explore` | Clean-rerun bounded DFS with deterministic suffix completion and collision-safe canonical-state pruning |
@@ -68,13 +72,15 @@ plan.
 | `mutant` | Strict pinned mutant manifests, isolated worktree execution, bounded evidence, and closed outcome classification |
 | `cmd/draft-mutants` | Seeded-mutant corpus runner with atomic, no-overwrite JSON result publication |
 | `adapters/etcdraft` | Experimental `go.etcd.io/raft/v3` v3.7.0 production-core adapter with conservative checking and adapter-local exact replay |
+| `adapters/etcdraft/cmd/draft-cross` | Replay-verified plan derivation plus private, no-clobber, manifest-committed comparative bundles and end-to-end verification |
 
 The root module is dependency-free and uses no wall-clock sleeps or background
 goroutines. The isolated nested etcd/raft adapter carries its production-core
 dependency. Both target Go 1.26 and declare the current Go 1.26.6 toolchain.
 
 See [MUTANTS.md](MUTANTS.md) for the seeded-fault evaluation contract and
-runner trust boundary.
+runner trust boundary. See [SEMANTIC_PLANS.md](SEMANTIC_PLANS.md) for the
+cross-adapter portability and comparison contract.
 
 ## Architecture
 
