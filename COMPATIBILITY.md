@@ -70,3 +70,29 @@ major version.
 `JSONLRecorder.Err` must be checked after a run. Unsupported message values or
 writer failures stop further recording but do not alter simulation control
 flow.
+
+## Semantic decision and run artifacts
+
+Semantic choices use `d-raft.decisions/v1`; self-describing executions use
+`d-raft.run/v1`. These schemas are independent from the observational trace.
+A v1 decision entry records the full choice, SHA-256 identities of its legal
+domain and semantic context, and the selected alternative. Exact replay stops
+at the first identity, kind, domain, context, or selection mismatch and also
+requires the tape to be fully consumed.
+
+A run artifact additionally fixes the scenario identifier and version,
+external action order and virtual times, adapter identity, cluster
+configuration, seeds, codec, decision/checker/observation schemas, toolchain and source revision,
+outcome, canonical observation digest, and invariant witnesses. The strict v1
+decoder rejects unknown fields. Additive schema changes therefore require a
+new reader mode or schema version rather than being silently ignored.
+
+Cross-version replay is an evaluated capability, not a blanket guarantee. A
+successful replay means the target adapter consumed the semantic tape and
+reproduced the recorded outcome; a rejected semantic context is useful drift
+evidence rather than a replay failure hidden by best-effort defaults.
+
+Run-header seeds are canonical decimal strings. Decision-v1 option weights,
+ranges, selections, and Raft message integers remain JSON numbers for
+compatibility with the published schema; consumers must use lossless integer
+decoding rather than `float64`.

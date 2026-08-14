@@ -1,10 +1,29 @@
 package check
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/aminkbi/d-raft/raft"
 )
+
+func TestViolationFingerprintValidation(t *testing.T) {
+	t.Parallel()
+
+	evidence := json.RawMessage(`{"term":4}`)
+	fingerprint, err := Fingerprint(ElectionSafety, []raft.NodeID{"a", "b"}, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	violation := Violation{ID: ElectionSafety, Nodes: []raft.NodeID{"a", "b"}, Evidence: json.RawMessage(" { \"term\" : 4 } "), Fingerprint: fingerprint}
+	if err := ValidateViolation(violation); err != nil {
+		t.Fatalf("ValidateViolation: %v", err)
+	}
+	violation.Evidence = json.RawMessage(`{"term":5}`)
+	if err := ValidateViolation(violation); err == nil {
+		t.Fatal("tampered evidence passed validation")
+	}
+}
 
 func TestCheckerAcceptsCertifiedLeader(t *testing.T) {
 	t.Parallel()

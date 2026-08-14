@@ -4,15 +4,19 @@
 package check
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
 	"github.com/aminkbi/d-raft/raft"
 )
+
+const SchemaVersion = "d-raft.check/v1"
 
 const (
 	ElectionSafety       = "raft/election-safety"
@@ -58,6 +62,48 @@ type Violation struct {
 
 func (v Violation) Error() string {
 	return fmt.Sprintf("%s at %dns [%s]: %s", v.ID, v.AtNS, v.Fingerprint, v.Evidence)
+}
+
+// Fingerprint returns the stable identity of canonical invariant evidence.
+func Fingerprint(id string, nodes []raft.NodeID, evidence json.RawMessage) (string, error) {
+	if id == "" || !json.Valid(evidence) {
+		return "", errors.New("check: invalid violation identity or evidence")
+	}
+	canonicalNodes := slices.Clone(nodes)
+	slices.Sort(canonicalNodes)
+	var canonicalEvidence bytes.Buffer
+	if err := json.Compact(&canonicalEvidence, evidence); err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	hash.Write([]byte(id))
+	hash.Write([]byte{0})
+	for _, node := range canonicalNodes {
+		hash.Write([]byte(node))
+		hash.Write([]byte{0})
+	}
+	hash.Write(canonicalEvidence.Bytes())
+	return hex.EncodeToString(hash.Sum(nil)[:12]), nil
+}
+
+// ValidateViolation verifies canonical node order, evidence, and fingerprint.
+func ValidateViolation(violation Violation) error {
+	if !slices.IsSorted(violation.Nodes) {
+		return errors.New("check: violation nodes are not sorted")
+	}
+	for index, node := range violation.Nodes {
+		if node == "" || index > 0 && node == violation.Nodes[index-1] {
+			return errors.New("check: violation nodes are empty or duplicated")
+		}
+	}
+	fingerprint, err := Fingerprint(violation.ID, violation.Nodes, violation.Evidence)
+	if err != nil {
+		return err
+	}
+	if fingerprint != violation.Fingerprint {
+		return errors.New("check: violation fingerprint mismatch")
+	}
+	return nil
 }
 
 type entryWitness struct {
@@ -239,15 +285,10 @@ func (c *Checker) add(at time.Duration, id string, nodes []raft.NodeID, evidence
 	if err != nil {
 		panic(fmt.Sprintf("check: marshal invariant evidence: %v", err))
 	}
-	hash := sha256.New()
-	hash.Write([]byte(id))
-	hash.Write([]byte{0})
-	for _, node := range canonicalNodes {
-		hash.Write([]byte(node))
-		hash.Write([]byte{0})
+	fingerprint, err := Fingerprint(id, canonicalNodes, raw)
+	if err != nil {
+		panic(fmt.Sprintf("check: fingerprint invariant evidence: %v", err))
 	}
-	hash.Write(raw)
-	fingerprint := hex.EncodeToString(hash.Sum(nil)[:12])
 	if _, exists := c.seen[fingerprint]; exists {
 		return
 	}

@@ -39,6 +39,8 @@ The repository currently contains:
    causal identities, and domain-drift rejection.
 6. A bounded, payload-lossless decoder for the known fields of the separate
    observational trace schema.
+7. A strict run-artifact schema and CLI that bundle scenario, configuration,
+   environment, semantic tape, outcome, observation digest, and witnesses.
 
 The reference model is a fixture and oracle for experiments, not itself the
 claimed research novelty.
@@ -81,7 +83,7 @@ violation witness.
 - [x] Independent safety checker and structured fingerprints
 - [x] Semantic decision recording and exact replay
 - [x] Payload-lossless observational trace decoding
-- [ ] Versioned, self-describing run artifacts and `run`/`replay`/`inspect` CLI
+- [x] Versioned, self-describing run artifacts and `run`/`replay`/`inspect` CLI
 - [ ] Prefix replay and bounded depth-first choice exploration
 - [ ] Fingerprint-preserving semantic delta debugging and domain shrinkers
 - [ ] Snapshot installation and safe log compaction

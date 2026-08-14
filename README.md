@@ -17,7 +17,8 @@ The project is created and maintained by
 
 > **Research status:** the deterministic kernel, durable reference Raft model,
 > cluster harness, safety checker, observational trace decoder, and exact
-> semantic decision replay are implemented. Run artifacts, exploration,
+> semantic decision replay are implemented. Self-describing run artifacts and
+> the `run`/`replay`/`inspect` CLI are also usable. Exploration,
 > counterexample minimization, snapshots, joint consensus, and production
 > adapters remain active research work.
 
@@ -48,6 +49,9 @@ plan.
 | `check` | Independent election, voting, term, log, commit, and apply safety witnesses with stable fingerprints |
 | `decision` | Versioned semantic choices, seeded selection, recording, exact tape replay, and domain-drift detection |
 | `trace` | Bounded, line-aware, payload-lossless decoder for known `d-raft.trace/v1` fields |
+| `artifact` | Strict, self-describing `d-raft.run/v1` artifacts with scenarios, configuration, environment, tape, outcome, digest, and witnesses |
+| `experiment` | Clean-run execution of versioned scenarios and external crash, restart, partition, heal, and proposal actions |
+| `cmd/draft` | `run`, `replay`, and `inspect` workflow for research artifacts |
 
 The root module is dependency-free and uses no wall-clock sleeps or background
 goroutines. It targets Go 1.26 and declares the current Go 1.26.6 toolchain.
@@ -141,7 +145,31 @@ if err := replay.Finish(); err != nil {
 `TapeDecider` stops at the first choice ID, kind, domain, or selection mismatch.
 This makes replay drift explicit instead of silently producing a different run.
 Exact execution also requires the same scenario version, external actions, and
-run horizon; the forthcoming run-artifact format will bundle those inputs.
+run horizon; `d-raft.run/v1` bundles those inputs with the tape.
+
+## Command-line workflow
+
+Build the research CLI and create a self-contained run artifact:
+
+```bash
+go build -o draft ./cmd/draft
+./draft run --seed 42 --duration 2s --out run.json
+./draft inspect run.json
+./draft replay run.json
+```
+
+`draft replay` starts from a clean cluster, consumes the stored choice tape,
+rejects any semantic drift, and verifies the recorded outcome status, step
+count, virtual end time, violation fingerprints, and versioned canonical
+observation digest. Artifact writes use a temporary file and atomic no-clobber
+publication, so an encoding or filesystem failure does not leave a plausible
+partial result. Artifacts remain private (`0600`) by default.
+
+The current built-in scenario is a steady fixed-membership cluster. The schema
+already represents scheduled proposals, partitions, healing, crashes, and
+restarts, including the crash-after-persistence-before-acknowledgement boundary;
+named fault scenarios and exploration commands are the next CLI
+milestone. See [ARTIFACTS.md](ARTIFACTS.md).
 
 ## Observational traces
 
