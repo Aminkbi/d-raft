@@ -47,6 +47,14 @@ jobs:
             --plan ../../corpus/cross-adapter/v1/loss-2pct-seed-20260814/semantic.plan.json \
             --source-run ../../corpus/cross-adapter/v1/loss-2pct-seed-20260814/source.run.json \
             --in ../../corpus/cross-adapter/v1/loss-2pct-seed-20260814/cross
+          go run ./cmd/draft-cross verify \
+            --plan ../../corpus/cross-adapter/v1/portable-faults-v1-seed-1/semantic.plan.json \
+            --source-run ../../corpus/cross-adapter/v1/portable-faults-v1-seed-1/source.run.json \
+            --in ../../corpus/cross-adapter/v1/portable-faults-v1-seed-1/cross
+          (cd ../../corpus/cross-adapter/v1/loss-2pct-seed-20260814 && \
+            sha256sum -c SHA256SUMS)
+          (cd ../../corpus/cross-adapter/v1/portable-faults-v1-seed-1 && \
+            sha256sum -c SHA256SUMS)
 
       - name: Vet
         run: go vet ./...
