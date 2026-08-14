@@ -105,6 +105,20 @@ ranges, selections, and Raft message integers remain JSON numbers for
 compatibility with the published schema; consumers must use lossless integer
 decoding rather than `float64`.
 
+## Mutant corpus schemas
+
+Seeded-fault manifests use `d-raft.mutant/v1`, and runner results use
+`d-raft.mutant-result/v1`. Both are strict schemas: consumers reject unknown
+fields and trailing JSON values. A result binds its canonical manifest digest,
+base commit and tree, both patch digests, executable revision and dirty state,
+target HEAD and dirty state, Go version, GOOS, and GOARCH. Classification meaning and the patch/command trust
+boundary are defined in [MUTANTS.md](MUTANTS.md).
+
+Changing the patch policy, marker contract, classification semantics, or the
+meaning of an existing field requires a new schema version. Adding another
+allowlisted corpus target does not make an existing result portable to that
+target; the pinned manifest and runner revision remain authoritative.
+
 The built-in reference compatibility tuple is atomic:
 
 - run v1: `d-raft/reference@1`, message codec v1, checker v1, observation v1;

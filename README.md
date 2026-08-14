@@ -27,7 +27,8 @@ The project is created and maintained by
 > implemented for a declared fixed-membership capability subset. A versioned,
 > portable binary KV application oracle now produces independently checkable
 > state/history commitments in both adapters, including reference snapshot
-> recovery. Mutants and comparative evaluation remain active work.
+> recovery. An isolated, repository-pinned seeded-mutant runner is implemented;
+> the versioned mutant corpus and comparative evaluation remain active work.
 
 ## Why d-raft?
 
@@ -62,11 +63,16 @@ plan.
 | `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
 | `explore` | Clean-rerun bounded DFS with deterministic suffix completion and collision-safe canonical-state pruning |
 | `minimize` | Scenario ddmin, sparse semantic guidance reduction, and domain-aware selection shrinking |
+| `mutant` | Strict pinned mutant manifests, isolated worktree execution, bounded evidence, and closed outcome classification |
+| `cmd/draft-mutants` | Seeded-mutant corpus runner with atomic, no-overwrite JSON result publication |
 | `adapters/etcdraft` | Experimental `go.etcd.io/raft/v3` v3.7.0 production-core adapter with conservative checking and adapter-local exact replay |
 
 The root module is dependency-free and uses no wall-clock sleeps or background
 goroutines. The isolated nested etcd/raft adapter carries its production-core
 dependency. Both target Go 1.26 and declare the current Go 1.26.6 toolchain.
+
+See [MUTANTS.md](MUTANTS.md) for the seeded-fault evaluation contract and
+runner trust boundary.
 
 ## Architecture
 

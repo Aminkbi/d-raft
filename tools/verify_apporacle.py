@@ -133,9 +133,14 @@ def verify(raw: bytes) -> dict[str, Any]:
         raise VerificationError("checkpoint size outside bounds")
     try:
         checkpoint = json.loads(raw, object_pairs_hook=object_no_duplicates)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+    except VerificationError:
+        raise
+    except (ValueError, UnicodeDecodeError, RecursionError) as error:
         raise VerificationError(f"invalid UTF-8 JSON: {error}") from error
-    canonical = json.dumps(checkpoint, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    try:
+        canonical = json.dumps(checkpoint, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as error:
+        raise VerificationError(f"JSON cannot be canonically encoded: {error}") from error
     if canonical != raw:
         raise VerificationError("checkpoint is not canonical JSON")
     checkpoint = require_fields(checkpoint, CHECKPOINT_FIELDS, "checkpoint")
@@ -232,11 +237,18 @@ def self_test() -> None:
     if commitment["chain_digest"] != "a7da7c9ae45a7c9560197d4237b1a65d641f128b525dfba6f77c82beb3162ccd":
         raise VerificationError("known-answer chain mismatch")
     corrupted = KAT_CHECKPOINT.replace("MQ==", "Mg==", 1).encode("ascii")
-    try:
-        verify(corrupted)
-    except VerificationError:
-        return
-    raise VerificationError("corrupted known-answer checkpoint was accepted")
+    malformed = {
+        "corrupted known answer": corrupted,
+        "oversized integer": b"1" * 5_000,
+        "excessive nesting": b"[" * 2_048 + b"]" * 2_048,
+        "lone surrogate": b'"\\ud800"',
+    }
+    for name, raw in malformed.items():
+        try:
+            verify(raw)
+        except VerificationError:
+            continue
+        raise VerificationError(f"{name} was accepted")
 
 
 def main() -> int:
