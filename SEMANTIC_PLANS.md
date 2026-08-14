@@ -98,6 +98,11 @@ messages or uncommitted proposals may still be pending.
 The command is built from the nested production-adapter module:
 
 ```text
+go run ./cmd/draft canonical \
+  --seed 1 \
+  --out source-run.json \
+  portable-faults-v1
+
 cd adapters/etcdraft
 go run ./cmd/draft-cross derive \
   --source-run ../../source-run.json \

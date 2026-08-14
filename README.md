@@ -67,8 +67,8 @@ plan.
 | `artifact` | Strict, self-describing `d-raft.run/v3` artifacts with scenarios, voter/learner roles, configuration actions, environment, tape, outcome, digest, and witnesses; legacy v1/v2 decoding remains available |
 | `apporacle` | Strict binary KV commands, canonical checkpoints, known-answer vectors, and adapter-neutral state/history commitments |
 | `semanticplan` | Strict portable plan/capability/execution schemas, plan-aware projection proof checks, negotiated invariant universes, normalized outcomes, and outcome-bound comparisons |
-| `experiment` | Clean-run execution of versioned scenarios and proposal, snapshot, begin/finalize membership, crash/restart, partition, and heal actions |
-| `cmd/draft` | `run`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
+| `experiment` | Clean-run execution of versioned and named canonical scenarios with proposal, snapshot, membership, process, and network actions |
+| `cmd/draft` | `run`, `canonical`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
 | `explore` | Clean-rerun bounded DFS with deterministic suffix completion and collision-safe canonical-state pruning |
 | `minimize` | Scenario ddmin, sparse semantic guidance reduction, and domain-aware selection shrinking |
 | `mutant` | Strict pinned mutant manifests, isolated worktree execution, bounded evidence, and closed outcome classification |
@@ -182,6 +182,7 @@ Build the research CLI and create a self-contained run artifact:
 ```bash
 go build -o draft ./cmd/draft
 ./draft run --seed 42 --duration 2s --out run.json
+./draft canonical --seed 1 --out portable-faults.json portable-faults-v1
 ./draft inspect run.json
 ./draft replay run.json
 ./draft explore --depth 6 --max-runs 1000
@@ -196,13 +197,18 @@ observation digest. Artifact writes use a temporary file and atomic no-clobber
 publication, so an encoding or filesystem failure does not leave a plausible
 partial result. Artifacts remain private (`0600`) by default.
 
-`draft run` and `draft explore` currently generate a steady all-voter scenario.
+`draft run` and `draft explore` generate a steady all-voter scenario. The named
+`portable-faults-v1` canonical scenario generates four portable KV proposals
+around a minority partition/heal and a crash/restart, followed by a 2.6-second
+quiet convergence tail. Its version fixes the three-node timing, 2% network
+loss, command bytes, and seed `1`; a different semantic stream requires a new
+canonical version rather than silently changing the published experiment.
 The v3 schema and Go APIs can also execute scheduled proposals, snapshots,
 joint membership transitions, partitions, healing, crashes, and restarts,
 including the crash-after-persistence-before-acknowledgement boundary. Role
 changes are limited to a pre-provisioned `Members` universe; they do not perform
-dynamic discovery or process creation. Named CLI fault suites and broader
-production adapters are later milestones. The experimental etcd/raft
+dynamic discovery or process creation. Additional named fault suites and
+broader production adapters are later milestones. The experimental etcd/raft
 production-core adapter and separate `draft-etcd` CLI are documented in
 [ADAPTERS.md](ADAPTERS.md). Canonical reference-state caching is enabled by
 default for `draft explore` and bounded with `--cache-entries` and

@@ -10,6 +10,7 @@ import (
 
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/decision"
+	"github.com/aminkbi/d-raft/experiment"
 	"github.com/aminkbi/d-raft/raft"
 	"github.com/aminkbi/d-raft/raftsim"
 )
@@ -36,6 +37,42 @@ func TestRunInspectReplayWorkflow(t *testing.T) {
 	stderr.Reset()
 	if code := execute([]string{"replay", path}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "verified") {
 		t.Fatalf("replay code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestCanonicalInspectReplayWorkflow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portable-faults.json")
+	var stdout, stderr bytes.Buffer
+	if code := execute([]string{"canonical", "--seed", "1", "--out", path, experiment.PortableFaultsV1}, &stdout, &stderr); code != 0 {
+		t.Fatalf("canonical code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	run, err := readArtifact(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Scenario.ID != "semantic/portable-faults" || len(run.Scenario.Actions) != 8 || run.Reproducibility.DecisionSeed != 1 {
+		t.Fatalf("run = %+v", run)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := execute([]string{"replay", path}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "verified") {
+		t.Fatalf("replay code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := execute([]string{"canonical", "--out", path, experiment.PortableFaultsV1}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "file exists") {
+		t.Fatalf("overwrite code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestCanonicalRejectsDifferentDecisionSeed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portable-faults.json")
+	var output bytes.Buffer
+	if code := execute([]string{"canonical", "--seed", "2", "--out", path, experiment.PortableFaultsV1}, &output, &output); code != 2 || !strings.Contains(output.String(), "fixes --seed=1") {
+		t.Fatalf("code=%d output=%q", code, output.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("rejected seed artifact exists: %v", err)
 	}
 }
 

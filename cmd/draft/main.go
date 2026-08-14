@@ -36,6 +36,8 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "run":
 		return runCommand(args[1:], stdout, stderr)
+	case "canonical":
+		return canonicalCommand(args[1:], stdout, stderr)
 	case "replay":
 		return replayCommand(args[1:], stdout, stderr)
 	case "inspect":
@@ -55,6 +57,59 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+}
+
+func canonicalCommand(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("draft canonical", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	output := flags.String("out", "d-raft-run.json", "artifact output path")
+	seed := flags.Uint64("seed", 1, "semantic decision seed")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: draft canonical [--seed N] [--out FILE] portable-faults-v1")
+		return 2
+	}
+	scenario, configuration, err := experiment.Canonical(flags.Arg(0))
+	if err != nil {
+		reportError(stderr, "draft canonical", err)
+		return 2
+	}
+	canonicalSeed, err := experiment.CanonicalDecisionSeed(flags.Arg(0))
+	if err != nil {
+		reportError(stderr, "draft canonical", err)
+		return 2
+	}
+	if *seed != canonicalSeed {
+		fmt.Fprintf(stderr, "draft canonical: %s fixes --seed=%d; a different semantic stream requires a new canonical version\n", safeText(flags.Arg(0), 128), canonicalSeed)
+		return 2
+	}
+	recorder := decision.NewRecorder(decision.NewSeedDecider(*seed))
+	outcome, err := experiment.Execute(scenario, configuration, recorder)
+	if err != nil {
+		reportError(stderr, "draft canonical", err)
+		return 2
+	}
+	if err := recorder.Err(); err != nil {
+		reportError(stderr, "draft canonical: record decisions", err)
+		return 2
+	}
+	run := artifact.Run{
+		Schema: artifact.SchemaVersion, Scenario: scenario,
+		Adapter:       artifact.Adapter{ID: artifact.ReferenceAdapterID, Version: artifact.ReferenceAdapterCurrent},
+		Configuration: configuration, Reproducibility: artifact.NewReproducibility(*seed),
+		Decisions: recorder.Tape(), Outcome: outcome,
+	}
+	if err := writeArtifact(*output, run); err != nil {
+		reportError(stderr, "draft canonical: write artifact", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "wrote %s\nscenario: %s\nstatus: %s\ndecisions: %d\nobservation: %s\n", safeText(*output, 4096), safeText(flags.Arg(0), 128), outcome.Status, len(run.Decisions.Entries), outcome.ObservationDigest)
+	if outcome.Status != artifact.OutcomeCompleted {
+		return 1
+	}
+	return 0
 }
 
 func exploreCommand(args []string, stdout, stderr io.Writer) int {
@@ -244,6 +299,12 @@ func replayCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "draft replay: unsupported adapter %s@%s\n", safeText(run.Adapter.ID, 128), safeText(run.Adapter.Version, 64))
 		return 2
 	}
+	if name, ok := experiment.CanonicalName(run.Scenario); ok {
+		if err := experiment.VerifyCanonical(name, run.Scenario, run.Configuration, uint64(run.Reproducibility.DecisionSeed)); err != nil {
+			reportError(stderr, "draft replay", err)
+			return 2
+		}
+	}
 	replay, err := decision.NewTapeDecider(run.Decisions)
 	if err != nil {
 		reportError(stderr, "draft replay", err)
@@ -381,15 +442,16 @@ func writeArtifact(path string, run artifact.Run) (err error) {
 	if err = os.Link(temporaryPath, path); err != nil {
 		return err
 	}
-	if err = os.Remove(temporaryPath); err != nil {
-		return err
-	}
+	// The destination is committed once the hard link succeeds. A staging-name
+	// cleanup failure must not report publication failure or invite a retry that
+	// can only hit the no-clobber destination.
+	_ = os.Remove(temporaryPath)
 	return nil
 }
 
 func usage(writer io.Writer) {
 	fmt.Fprintln(writer, "d-raft semantic counterexample research CLI")
-	fmt.Fprintln(writer, "usage: draft <run|explore|replay|minimize|inspect|version> [options]")
+	fmt.Fprintln(writer, "usage: draft <run|canonical|explore|replay|minimize|inspect|version> [options]")
 }
 
 func reportError(writer io.Writer, prefix string, err error) {

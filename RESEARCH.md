@@ -58,6 +58,9 @@ The repository currently contains:
     bilateral capability negotiation, explicit projection fidelity, exact
     target-local replay tapes for successful projections, successful-prefix
     evidence for failed projections, and axis-separated normalized comparisons.
+12. A versioned canonical portable workload with proposals, loss,
+    partition/heal, crash/restart, a convergence tail, and an end-to-end
+    cross-adapter commitment regression.
 
 The reference model is a fixture and oracle for experiments, not itself the
 claimed research novelty.

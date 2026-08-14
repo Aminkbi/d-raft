@@ -84,6 +84,51 @@ func TestRunPublishesStrictCrossAdapterArtifactsWithoutOverwrite(t *testing.T) {
 	}
 }
 
+func TestCanonicalPortableFaultsCommitsFourCommandsAndVerifies(t *testing.T) {
+	directory := t.TempDir()
+	scenario, configuration, err := experiment.Canonical(experiment.PortableFaultsV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(directory, "source.json")
+	writeSourceRunWithConfiguration(t, sourcePath, scenario, configuration, experiment.PortableFaultsV1DecisionSeed)
+	planPath := filepath.Join(directory, "plan.json")
+	prefix := filepath.Join(directory, "result")
+	var stdout, stderr bytes.Buffer
+	if code := execute([]string{"derive", "--source-run", sourcePath, "--fallback-seed", "1", "--out", planPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("derive = %d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := execute([]string{"run", "--plan", planPath, "--source-run", sourcePath, "--out", prefix}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run = %d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
+	}
+	for _, path := range resultPaths(prefix)[4:6] {
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		outcome, decodeErr := semanticplan.DecodeNormalizedOutcome(file)
+		closeErr := file.Close()
+		if decodeErr != nil || closeErr != nil {
+			t.Fatalf("decode outcome %s: %v / %v", path, decodeErr, closeErr)
+		}
+		if !outcome.ApplicationNodesAgreeAtBoundary || len(outcome.NodeCommitments) != 3 {
+			t.Fatalf("outcome %s commitments = %+v", path, outcome.NodeCommitments)
+		}
+		for _, node := range outcome.NodeCommitments {
+			if node.Commitment.Commands != 4 {
+				t.Fatalf("outcome %s node %s commands = %d, want 4", path, node.Node, node.Commitment.Commands)
+			}
+		}
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := execute([]string{"verify", "--plan", planPath, "--source-run", sourcePath, "--in", prefix}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "verified") {
+		t.Fatalf("verify = %d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestDeriveRejectsNonReplayableSourceEvidence(t *testing.T) {
 	directory := t.TempDir()
 	validPath := filepath.Join(directory, "valid.json")
@@ -332,8 +377,11 @@ func planFromSource(t *testing.T, source sourceRun, fallbackSeed uint64) semanti
 
 func writeSourceRun(t *testing.T, path string, scenario artifact.Scenario) sourceRun {
 	t.Helper()
-	configuration := commandTestConfiguration()
-	const seed = uint64(13)
+	return writeSourceRunWithConfiguration(t, path, scenario, commandTestConfiguration(), 13)
+}
+
+func writeSourceRunWithConfiguration(t *testing.T, path string, scenario artifact.Scenario, configuration artifact.Configuration, seed uint64) sourceRun {
+	t.Helper()
 	recorder := decision.NewRecorder(decision.NewSeedDecider(seed))
 	outcome, err := experiment.Execute(scenario, configuration, recorder)
 	if err != nil {
