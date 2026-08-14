@@ -32,8 +32,10 @@ The project is created and maintained by
 > safety kills and three separately reported conformance kills. Strict
 > adapter-neutral semantic plans, bilateral capability preflight, projection
 > accounting, normalized outcomes/comparisons, source-provenance verification,
-> and a two-adapter research CLI are implemented. The public comparative corpus
-> and report remain active work.
+> and a two-adapter research CLI are implemented. The first immutable,
+> CI-verified [cross-adapter control corpus](corpus/cross-adapter/v1/) is
+> published; the faulted-workload evaluation and final report remain active
+> work.
 
 ## Why d-raft?
 

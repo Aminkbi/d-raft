@@ -70,7 +70,9 @@ decision tape, so that adapter's execution remains independently replayable.
 For a `failed` projection, the tape contains only the exact successful prefix;
 the rejected choice is not misrepresented as replayable evidence. Bundle
 verification checks that prefix against the plan and deterministically
-regenerates the complete failed execution with the declared build.
+regenerates the complete failed semantic evidence. Producer build provenance
+remains bound into the execution and manifest but is not replaced by the
+verifier's own revision.
 
 ## Comparison discipline
 

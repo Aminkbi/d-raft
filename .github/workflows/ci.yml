@@ -40,6 +40,14 @@ jobs:
         working-directory: adapters/etcdraft
         run: go test -count=20 ./...
 
+      - name: Verify published cross-adapter corpus
+        working-directory: adapters/etcdraft
+        run: |
+          go run ./cmd/draft-cross verify \
+            --plan ../../corpus/cross-adapter/v1/loss-2pct-seed-20260814/semantic.plan.json \
+            --source-run ../../corpus/cross-adapter/v1/loss-2pct-seed-20260814/source.run.json \
+            --in ../../corpus/cross-adapter/v1/loss-2pct-seed-20260814/cross
+
       - name: Vet
         run: go vet ./...
 

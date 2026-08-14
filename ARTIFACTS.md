@@ -101,6 +101,8 @@ adapter-local observation digests are identical.
 
 The associated capability, semantic-execution, normalized-outcome, and
 normalized-comparison schemas are documented in [SEMANTIC_PLANS.md](SEMANTIC_PLANS.md).
+An immutable, manifest-bound example is published in the
+[cross-adapter corpus](corpus/cross-adapter/v1/).
 A single-threaded artifact still cannot represent production data races, and
 the current atomic store does not model torn writes or corruption.
 

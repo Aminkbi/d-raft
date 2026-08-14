@@ -780,6 +780,10 @@ func verifyReferenceExecution(plan semanticplan.Plan, execution semanticplan.Sem
 	if err != nil {
 		return err
 	}
+	// Producer build provenance is immutable evidence, not a requirement that
+	// the verifier itself was built by the same toolchain or revision. Replace
+	// only that field before comparing the regenerated semantic evidence.
+	fresh.Reproducibility = execution.Reproducibility
 	gotDigest, err := semanticplan.DigestSemanticExecution(execution)
 	if err != nil {
 		return err
@@ -804,6 +808,7 @@ func verifyEtcdExecution(plan semanticplan.Plan, execution semanticplan.Semantic
 	if err != nil {
 		return err
 	}
+	fresh.Reproducibility = execution.Reproducibility
 	gotDigest, err := semanticplan.DigestSemanticExecution(execution)
 	if err != nil {
 		return err
