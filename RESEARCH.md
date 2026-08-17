@@ -69,8 +69,10 @@ claimed research novelty.
 
 1. How reliably do semantic counterexamples replay across machines, supported
    Go toolchains, implementation versions, and independent Raft adapters?
-2. Under equal transition and wall-clock budgets, how do randomized and bounded
-   systematic search compare in time to first failure and distinct failures?
+2. Under one explicit runner-invocation ceiling, what execution and
+   frontier-accounting profiles do random full runs and bounded systematic
+   search exhibit, and what is the end-to-end effect of enabling exact frontier
+   caching under matched DFS bounds?
 3. How much do semantic-context-aware reduction and generic delta debugging
    reduce a failing execution while preserving the same violation fingerprint?
 4. Does a minimized counterexample with a structured witness reduce diagnosis
@@ -127,11 +129,29 @@ budget, cluster size, scenario and adapter versions, fault policy, seed,
 decision schema, invariant, and raw/minimized artifact sizes. Performance
 comparisons require repeated trials and uncertainty intervals.
 
-Primary measurements are executions and transitions per second, explored
-prefixes and retained unique frontier identities, time to first failure, distinct violation
-fingerprints, exact local replay success, semantic-plan acceptance,
-normalized-outcome agreement, reduction ratio, reduction cost, and mutant kill
-rate.
+The initial comparative study is deliberately a bounded harness/accounting
+study, not a bug-finding-effectiveness experiment. Its single common ceiling is
+runner invocations. A random invocation is a terminal full run, while a DFS
+invocation may stop at an open choice, so equal invocation counts are not equal
+computational work. Random-versus-DFS elapsed time and event-attempt throughput
+are descriptive marginals only. The pre-specified paired contrast is cache-on
+minus cache-off within the same trial; it measures the end-to-end effect of
+enabling pruning under matched DFS bounds, including cache lookup/retention
+overhead and any downstream runner or canonicalization work avoided, against a
+cache-off baseline that retains frontier-capture overhead. If no repeated exact
+cache identity occurs, that contrast is a null-cache-hit/overhead result and is
+not evidence of pruning efficacy.
+
+Primary measurements for this bounded study are runner invocations, accepted
+terminal executions by closed outcome status, processed simulator event
+attempts, explored/open/pruned prefixes, retained unique frontier identities,
+cache accounting, wall time, and event-attempt throughput. Exact local replay
+success, semantic-plan acceptance, normalized-outcome agreement, reduction
+ratio/cost, and bounded mutant kills come from their separate versioned corpora.
+Time to first real failure, detection probability, distinct production-defect
+yield, and diagnosis time remain unmeasured; those require seeded-fault or
+real-defect workloads, time/transition-matched designs, and in the diagnosis
+case a preregistered user study.
 
 Planned baselines include:
 
@@ -140,7 +160,8 @@ Planned baselines include:
 - seed-only randomized replay;
 - ordinary delta debugging over a flat stimulus list;
 - a DEMi-inspired distributed-trace reduction strategy; and
-- random search versus bounded prefix exploration under equal budgets.
+- descriptive random full runs and bounded prefix exploration under the same
+  runner-invocation ceiling, with their unequal work semantics reported.
 
 Diagnosis-time claims require a preregistered small user study or should remain
 clearly labeled qualitative.
@@ -182,6 +203,14 @@ artifact.
 - Cross-implementation semantics may be narrower than any one implementation's
   feature set.
 - Results from one production adapter or one mutant corpus may not generalize.
+- The bounded evaluator's processed-event counter includes a scheduled event
+  that opens a choice after partial processing, but excludes bootstrap choices
+  and canonicalization work. It is an event-attempt accounting measure, not an
+  implementation-independent transition or equal-work unit.
+- Its fixed cyclic order balances method positions but does not randomize away
+  temporal drift or autocorrelation. Student-t intervals are conditional,
+  descriptive summaries of these serial trials rather than population-level
+  coverage guarantees.
 - Opaque legacy application snapshots cannot prove leader completeness for
   entries below their boundary. The portable KV profile supplies independently
   comparable bounded state/history commitments, but that shared oracle has

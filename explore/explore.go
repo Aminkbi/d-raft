@@ -16,6 +16,7 @@ var (
 	ErrInvalidBounds         = errors.New("explore: invalid bounds")
 	ErrInvalidCacheBounds    = errors.New("explore: invalid cache bounds")
 	ErrMissingCanonicalState = errors.New("explore: cached runner returned no canonical state at an open choice")
+	ErrInvalidOutcomeStatus  = errors.New("explore: runner returned an invalid outcome status")
 )
 
 const (
@@ -55,23 +56,27 @@ type Execution struct {
 }
 
 type Result struct {
-	Runs             int
-	OpenChoices      int
-	Completed        int
-	PrunedPrefixes   int
-	DepthBoundHits   int
-	SampledDomains   int
-	ViolatingRuns    int
-	StatePruned      int
-	CacheLookups     int
-	CacheHits        int
-	CacheMisses      int
-	HashCollisions   int
-	UniqueStates     int
-	CacheBytes       int
-	CacheBudgetSkips int
-	Truncated        bool
-	FirstViolation   *Execution
+	Runs                 int
+	OpenChoices          int
+	Completed            int
+	CompletedRuns        int
+	ErrorRuns            int
+	BudgetExhaustedRuns  int
+	PrunedPrefixes       int
+	DepthBoundHits       int
+	SampledDomains       int
+	OutcomeViolationRuns int
+	ViolatingRuns        int
+	StatePruned          int
+	CacheLookups         int
+	CacheHits            int
+	CacheMisses          int
+	HashCollisions       int
+	UniqueStates         int
+	CacheBytes           int
+	CacheBudgetSkips     int
+	Truncated            bool
+	FirstViolation       *Execution
 }
 
 type stateHasher func([]byte) [sha256.Size]byte
@@ -185,6 +190,9 @@ func dfs(run internalRunner, bounds Bounds, cache *stateCache) (result Result, e
 				continue
 			}
 			result.Completed++
+			if err := recordOutcomeStatus(&result, execution.Outcome); err != nil {
+				return result, err
+			}
 			if outcomeMatches(execution.Outcome, bounds.TargetFingerprint) {
 				result.ViolatingRuns++
 				if result.FirstViolation == nil {
@@ -253,6 +261,9 @@ func dfs(run internalRunner, bounds Bounds, cache *stateCache) (result Result, e
 				return result, err
 			}
 			result.Completed++
+			if err := recordOutcomeStatus(&result, outcome); err != nil {
+				return result, err
+			}
 			execution := Execution{Tape: decision.CloneTape(prefix), Outcome: outcome}
 			if outcomeMatches(outcome, bounds.TargetFingerprint) {
 				result.ViolatingRuns++
@@ -268,6 +279,22 @@ func dfs(run internalRunner, bounds Bounds, cache *stateCache) (result Result, e
 	}
 	result.Truncated = len(stack) > 0
 	return result, nil
+}
+
+func recordOutcomeStatus(result *Result, outcome artifact.Outcome) error {
+	switch outcome.Status {
+	case artifact.OutcomeCompleted:
+		result.CompletedRuns++
+	case artifact.OutcomeViolation:
+		result.OutcomeViolationRuns++
+	case artifact.OutcomeError:
+		result.ErrorRuns++
+	case artifact.OutcomeBudgetExhausted:
+		result.BudgetExhaustedRuns++
+	default:
+		return ErrInvalidOutcomeStatus
+	}
+	return nil
 }
 
 func complete(run internalRunner, prefix decision.Tape, seed uint64) (Execution, bool, error) {

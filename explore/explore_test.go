@@ -61,6 +61,52 @@ func TestDFSFillsSuffixAtDepthBound(t *testing.T) {
 	}
 }
 
+func TestDFSSeparatesOutcomeStatusFromTargetMatching(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		outcome   artifact.Outcome
+		completed int
+		violating int
+		errors    int
+		exhausted int
+		matching  int
+	}{
+		{name: "completed", outcome: artifact.Outcome{Status: artifact.OutcomeCompleted}, completed: 1},
+		{name: "violation", outcome: artifact.Outcome{Status: artifact.OutcomeViolation, Violations: []check.Violation{{Fingerprint: "other"}}}, violating: 1},
+		{name: "error", outcome: artifact.Outcome{Status: artifact.OutcomeError}, errors: 1},
+		{name: "budget exhausted", outcome: artifact.Outcome{Status: artifact.OutcomeBudgetExhausted}, exhausted: 1},
+		{name: "matching violation", outcome: artifact.Outcome{Status: artifact.OutcomeViolation, Violations: []check.Violation{{Fingerprint: "target"}}}, violating: 1, matching: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := DFS(
+				func(decision.Decider) (artifact.Outcome, error) { return test.outcome, nil },
+				Bounds{MaxRuns: 1, MaxDepth: 0, MaxBranchesPerChoice: 1, RangeSamples: 1, TargetFingerprint: "target"},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Completed != 1 || result.CompletedRuns != test.completed || result.OutcomeViolationRuns != test.violating || result.ErrorRuns != test.errors || result.BudgetExhaustedRuns != test.exhausted || result.ViolatingRuns != test.matching {
+				t.Fatalf("result = %+v", result)
+			}
+		})
+	}
+}
+
+func TestDFSRejectsUnknownOutcomeStatus(t *testing.T) {
+	t.Parallel()
+
+	_, err := DFS(
+		func(decision.Decider) (artifact.Outcome, error) { return artifact.Outcome{Status: "future"}, nil },
+		Bounds{MaxRuns: 1, MaxDepth: 0, MaxBranchesPerChoice: 1, RangeSamples: 1},
+	)
+	if !errors.Is(err, ErrInvalidOutcomeStatus) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestStateCacheCopiesBytesAndDefendsAgainstHashCollisions(t *testing.T) {
 	t.Parallel()
 

@@ -68,7 +68,9 @@ plan.
 | `apporacle` | Strict binary KV commands, canonical checkpoints, known-answer vectors, and adapter-neutral state/history commitments |
 | `semanticplan` | Strict portable plan/capability/execution schemas, plan-aware projection proof checks, negotiated invariant universes, normalized outcomes, and outcome-bound comparisons |
 | `experiment` | Clean-run execution of versioned and named canonical scenarios with proposal, snapshot, membership, process, and network actions |
+| `evaluation` | Strict balanced-trial evaluator with raw accounting, paired cache contrasts, machine/build provenance, and publication validation |
 | `cmd/draft` | `run`, `canonical`, `explore`, `replay`, `minimize`, and `inspect` research workflow |
+| `cmd/draft-eval` | Linux research-evaluation runner with clean-build provenance gating and durable, private, no-clobber publication |
 | `explore` | Clean-rerun bounded DFS with deterministic suffix completion and collision-safe canonical-state pruning |
 | `minimize` | Scenario ddmin, sparse semantic guidance reduction, and domain-aware selection shrinking |
 | `mutant` | Strict pinned mutant manifests, isolated worktree execution, bounded evidence, and closed outcome classification |
@@ -188,6 +190,10 @@ go build -o draft ./cmd/draft
 ./draft explore --depth 6 --max-runs 1000
 ./draft explore --cache=false --depth 6 --max-runs 1000 # matched baseline
 ./draft minimize --out minimized.json failing.json
+
+go build -buildvcs=true -o draft-eval ./cmd/draft-eval
+./draft-eval --trials 21 --out d-raft-evaluation.json
+./draft-eval --verify d-raft-evaluation.json
 ```
 
 `draft replay` starts from a clean cluster, consumes the stored choice tape,
@@ -218,6 +224,16 @@ default for `draft explore` and bounded with `--cache-entries` and
 [CANONICAL_STATE.md](CANONICAL_STATE.md), and
 [MINIMIZATION.md](MINIMIZATION.md). The opt-in cross-adapter application profile
 is specified in [APPLICATION_ORACLE.md](APPLICATION_ORACLE.md).
+
+`draft-eval` runs the fixed balanced study only from a clean, VCS-stamped Linux
+build. It records all raw trials, machine and schema identity, status-separated
+terminal outcomes, processed event attempts, and the paired cache-on minus
+cache-off contrast. Its common runner-invocation ceiling does not make random
+full runs and DFS frontier probes equal computational work. If the workload has
+no cache hits or state pruning, the result characterizes cache overhead with no
+repeated exact cache identity; it is not evidence of pruning efficacy or
+real-bug detection probability. The output path is preflighted before the run
+and published as a durable, `0600`, no-clobber artifact.
 
 ## Observational traces
 
