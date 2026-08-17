@@ -34,8 +34,10 @@ The project is created and maintained by
 > accounting, normalized outcomes/comparisons, source-provenance verification,
 > and a two-adapter research CLI are implemented. Immutable, CI-verified
 > [cross-adapter control and faulted-workload cases](corpus/cross-adapter/v1/)
-> are published; the broader comparative evaluation and final report remain
-> active work.
+> are published. A clean-provenance 21-trial bounded harness/accounting study,
+> raw trial observations, paired cache contrast, and pinned related-work matrix
+> are also published; real-bug effectiveness and diagnosis-time claims remain
+> outside the measured evidence.
 
 ## Why d-raft?
 
@@ -85,6 +87,10 @@ dependency. Both target Go 1.26 and declare the current Go 1.26.6 toolchain.
 See [MUTANTS.md](MUTANTS.md) for the seeded-fault evaluation contract and
 runner trust boundary. See [SEMANTIC_PLANS.md](SEMANTIC_PLANS.md) for the
 cross-adapter portability and comparison contract.
+See [EVALUATION.md](EVALUATION.md) for the bounded study,
+[RELATED_WORK.md](RELATED_WORK.md) for pinned positioning, and
+[REPRODUCIBILITY.md](REPRODUCIBILITY.md) for verification and archival steps.
+Release-level changes are summarized in [CHANGELOG.md](CHANGELOG.md).
 
 ## Architecture
 

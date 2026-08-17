@@ -1,21 +1,24 @@
 cff-version: 1.2.0
 message: "If you use d-raft in published work, please cite this software."
-title: "d-raft: Portable semantic counterexamples for Raft"
+title: "d-raft: Deterministic semantic artifacts for Raft"
 type: software
+version: 0.1.0
+date-released: "2026-08-17"
 authors:
   - given-names: Mohammadamin
     family-names: Khanbabaei
     alias: aminkbi
     website: "https://github.com/aminkbi"
 repository-code: "https://github.com/aminkbi/d-raft"
+repository-artifact: "https://github.com/aminkbi/d-raft/releases/tag/v0.1.0"
 url: "https://github.com/aminkbi/d-raft"
 license: Apache-2.0
 abstract: >-
-  d-raft is a deterministic research platform for producing replayable and
-  independently checkable Raft executions. It provides a pure Raft reference
-  state machine, virtual time, explicit durable persistence barriers, a
-  faultable network, safety witnesses, semantic decision tapes, and versioned
-  observational traces.
+  d-raft is a deterministic research platform for producing replayable,
+  minimized, and independently checkable Raft executions. It combines a pure
+  durable reference model, semantic decision tapes, structured safety
+  witnesses, bounded systematic exploration, a production-core etcd/raft
+  adapter, and capability-negotiated cross-implementation evidence.
 keywords:
   - Raft
   - consensus

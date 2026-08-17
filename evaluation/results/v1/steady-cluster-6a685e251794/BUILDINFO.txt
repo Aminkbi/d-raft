@@ -1,0 +1,14 @@
+/tmp/draft-eval-6a685e251794: go1.26.6
+path github.com/aminkbi/d-raft/cmd/draft-eval
+mod github.com/aminkbi/d-raft v0.0.0-20260817093125-6a685e251794
+build -buildmode=exe
+build -compiler=gc
+build -ldflags=-X=main.version=6a685e251794
+build CGO_ENABLED=1
+build GOARCH=amd64
+build GOOS=linux
+build GOAMD64=v1
+build vcs=git
+build vcs.revision=6a685e251794ed8344342bea626e0a4a0942da2f
+build vcs.time=2026-08-17T09:31:25Z
+build vcs.modified=false

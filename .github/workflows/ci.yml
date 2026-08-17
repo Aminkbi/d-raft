@@ -56,6 +56,13 @@ jobs:
           (cd ../../corpus/cross-adapter/v1/portable-faults-v1-seed-1 && \
             sha256sum -c SHA256SUMS)
 
+      - name: Verify published evaluation artifact
+        run: |
+          go run ./cmd/draft-eval --verify \
+            evaluation/results/v1/steady-cluster-6a685e251794/result.json
+          (cd evaluation/results/v1/steady-cluster-6a685e251794 && \
+            sha256sum -c SHA256SUMS)
+
       - name: Vet
         run: go vet ./...
 

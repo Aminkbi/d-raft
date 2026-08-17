@@ -115,7 +115,8 @@ violation witness.
 - [x] Portable application-state oracle and cross-adapter commitment surface
 - [x] Versioned seeded mutant corpus and isolated execution harness
 - [x] Adapter-neutral semantic plans and normalized cross-adapter execution
-- [ ] Comparative evaluation, public counterexample corpus, and archival release
+- [x] Bounded comparative evaluation and public counterexample corpus
+- [x] Reproducible v0.1 archival release package
 
 The completed membership milestone is deliberately scoped to role changes over
 a pre-provisioned universe with explicit two-phase finalization. It does not
@@ -124,7 +125,7 @@ learner catch-up/readiness gate.
 
 ## Evaluation design
 
-Experiments will report the repository commit, Go version, hardware, search
+Experiments report the repository commit, Go version, hardware, search
 budget, cluster size, scenario and adapter versions, fault policy, seed,
 decision schema, invariant, and raw/minimized artifact sizes. Performance
 comparisons require repeated trials and uncertainty intervals.
@@ -181,8 +182,8 @@ relative to:
 - Antithesis, including its published
   [Raft findings](https://antithesis.com/blog/2026/finding-bugs-in-raft-implementations/).
 
-A formal related-work matrix and pinned citations will accompany the evaluation
-artifact.
+A formal related-work matrix and pinned citations accompany the evaluation
+artifact in [RELATED_WORK.md](RELATED_WORK.md).
 
 ## Threats to validity
 
