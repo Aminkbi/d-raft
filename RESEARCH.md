@@ -6,20 +6,38 @@ found it. Raft is the first target because its safety properties are precise,
 its persistence boundaries are operationally important, and mature independent
 implementations are available for comparison.
 
-## Working thesis
+## Primary claim to test
 
-Given a Raft safety failure found by randomized or systematic execution,
-d-raft should produce a versioned counterexample that is:
+For a predeclared set of supported implementation changes, semantic
+counterexamples preserve reproduction of the same defect more reliably than
+seed-only replay; semantic reduction decreases the execution evidence needed
+to reproduce that defect at a measured cost.
 
-- replayable without depending on incidental random-number consumption;
-- minimized in terms of semantic choices rather than raw log lines;
-- independently checkable from a structured invariant witness; and
-- portable across supported implementations and versions through adapters.
+This is a falsifiable hypothesis, not a measured result. The first paper is
+scoped to failure-preserving replay and reduction. Search efficiency, cache
+performance, general protocol equivalence, and human diagnosis time are
+separate workstreams rather than additional primary claims.
 
-The working research hypothesis is that combining portability, semantic
-reduction, explicit evidence, and cross-implementation replay will improve the
-usefulness of counterexamples. Novelty and benefit remain to be established by
-the related-work comparison, production adapters, and comparative evaluation.
+[RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md) specifies the comparison units,
+failure predicate, baselines, exclusions, and decision gates. Changes of
+interest are message insertion/reordering, batching, timer scheduling, and
+supported version upgrades. Preservation is conditional on a stated mapping
+of causal events; equal occurrence keys alone do not supply that mapping.
+
+Three outcomes must stay separate:
+
+1. Reproducing a defect on another vulnerable implementation version.
+2. Replaying its scenario on a fixed version without the target failure.
+3. Applying the scenario to an independent implementation and independently
+   assessing its outcome. A correct implementation need not fail.
+
+The executable [projection study](PROJECTION_STUDY.md) establishes a narrower
+negative result: v1 projection can consume every directive exactly while
+moving faults to different logical operations. Its causal prototype is a toy
+operation-level policy, not an implemented production-adapter causal schema.
+Production-defect effectiveness and a comparative reduction benefit remain
+unmeasured.
+
 The project does **not** claim novelty for deterministic simulation, a pure
 state-machine interface, seed replay, trace minimization, or implementation
 trace validation in isolation.
@@ -65,20 +83,19 @@ The repository currently contains:
 The reference model is a fixture and oracle for experiments, not itself the
 claimed research novelty.
 
-## Research questions
+## Primary research questions
 
-1. How reliably do semantic counterexamples replay across machines, supported
-   Go toolchains, implementation versions, and independent Raft adapters?
-2. Under one explicit runner-invocation ceiling, what execution and
-   frontier-accounting profiles do random full runs and bounded systematic
-   search exhibit, and what is the end-to-end effect of enabling exact frontier
-   caching under matched DFS bounds?
-3. How much do semantic-context-aware reduction and generic delta debugging
-   reduce a failing execution while preserving the same violation fingerprint?
-4. Does a minimized counterexample with a structured witness reduce diagnosis
-   time compared with a seed and an unminimized event trace?
-5. Which choices form a portable core across implementations with different
-   batching, ticking, pre-vote, and storage APIs?
+1. Under which declared implementation changes does a semantic counterexample
+   preserve a specified defect, compared with seed-only and interval replay?
+2. When does occurrence correspondence differ from causal correspondence, and
+   which target mappings must be rejected rather than approximated?
+3. How much does semantic reduction reduce actions, executed choices, artifact
+   bytes, and execution length compared with flat ddmin under the same budget
+   and preservation predicate?
+
+Cross-machine exact local replay is a reproducibility prerequisite. The v1
+cache/accounting study below is supporting infrastructure evidence. Diagnosis
+time remains outside the first-paper claim and requires a separate user study.
 
 ## Artifact pipeline
 

@@ -46,6 +46,8 @@ const (
 // terms, log indexes, or message types. Incarnation and Occurrence are
 // canonical unsigned decimal strings, which preserves their full uint64 range
 // in language-neutral JSON.
+// Equal keys establish occurrence correspondence only: reordered or batched
+// messages may have different causal roles even when projection is exact.
 type PortableKey struct {
 	Kind        decision.Kind   `json:"kind"`
 	Node        raft.NodeID     `json:"node,omitempty"`

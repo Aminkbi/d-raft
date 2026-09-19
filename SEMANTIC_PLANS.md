@@ -74,6 +74,15 @@ regenerates the complete failed semantic evidence. Producer build provenance
 remains bound into the execution and manifest but is not replaced by the
 verifier's own revision.
 
+`exact` describes directive coverage under these occurrence keys. It does not
+establish causal correspondence: inserting or reordering messages can change
+which logical operation occupies a send sequence. The executable
+[projection robustness study](PROJECTION_STUDY.md) includes an exact-coverage
+case that applies both decisions to different operations and loses the source
+toy failure. Its experimental operation-identity policy is not part of v1
+plans or production adapter capabilities. Existing v1 reports and schemas
+retain their original coverage meaning.
+
 ## Comparison discipline
 
 Normalized comparisons keep these questions separate:

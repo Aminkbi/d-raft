@@ -6,6 +6,21 @@ All notable changes to d-raft are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- A focused failure-preserving replay research protocol with explicit defect
+  predicates, baselines, exclusions, and production-evaluation decision gates.
+- A deterministic synthetic projection study comparing fault intervals,
+  existing occurrence-based projection, and an operation-identity prototype;
+  raw outcomes, exact local replay, tamper verification, and CI checks.
+
+### Clarified
+
+- Exact portable projection describes choice coverage, not causal equivalence.
+  A reordered-message fixture demonstrates exact coverage that loses the
+  source failure. Conflicting batches are rejected by the experimental causal
+  policy; existing v1 schemas and production adapters are unchanged.
+
 ## [0.1.0] - 2026-08-17
 
 First archival research release by Mohammadamin Khanbabaei (`aminkbi`).

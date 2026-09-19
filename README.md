@@ -56,6 +56,14 @@ all have substantial prior art. d-raft does not present those techniques alone
 as novel; [RESEARCH.md](RESEARCH.md) defines the narrower thesis and evaluation
 plan.
 
+The next study focuses on **failure-preserving replay across declared
+implementation changes**, with semantic reduction as a measured supporting
+claim. [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md) defines its falsifiable
+questions and baselines. The executable [projection study](PROJECTION_STUDY.md)
+already demonstrates a limitation: exact occurrence coverage can move faults
+to different logical operations. Its causal prototype and results are
+synthetic development evidence, not production-defect effectiveness results.
+
 ## What works today
 
 | Package | Role |

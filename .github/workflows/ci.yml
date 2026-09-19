@@ -32,6 +32,11 @@ jobs:
       - name: Verify portable application vectors independently
         run: python3 tools/verify_apporacle.py --self-test
 
+      - name: Verify synthetic projection study
+        run: |
+          go run ./cmd/draft-projection-study --verify evaluation/results/projection-v1/result.json
+          (cd evaluation/results/projection-v1 && sha256sum -c SHA256SUMS)
+
       - name: Test etcd/raft adapter
         working-directory: adapters/etcdraft
         run: go test ./...

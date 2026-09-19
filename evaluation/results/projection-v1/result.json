@@ -1,0 +1,2104 @@
+{
+  "schema": "d-raft.projection-study/v1",
+  "model": "synthetic/ack-before-replication-v1",
+  "fallback_seed": 1,
+  "source": {
+    "id": "control",
+    "messages": [
+      {
+        "sequence": 1,
+        "at": 10,
+        "operations": [
+          "x"
+        ]
+      },
+      {
+        "sequence": 2,
+        "at": 20,
+        "operations": [
+          "y"
+        ]
+      }
+    ]
+  },
+  "source_tape": {
+    "schema": "d-raft.decisions/v1",
+    "entries": [
+      {
+        "choice": {
+          "id": "study/send/1/loss",
+          "kind": "network_loss",
+          "options": [
+            {
+              "id": "drop",
+              "weight": 1
+            },
+            {
+              "id": "deliver",
+              "weight": 1
+            }
+          ],
+          "context": {
+            "from": "a",
+            "to": "b",
+            "sender_incarnation": 1,
+            "send_sequence": 1,
+            "operations": [
+              "x"
+            ]
+          }
+        },
+        "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+        "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+        "selection": {
+          "option": "drop"
+        }
+      },
+      {
+        "choice": {
+          "id": "study/send/2/loss",
+          "kind": "network_loss",
+          "options": [
+            {
+              "id": "drop",
+              "weight": 1
+            },
+            {
+              "id": "deliver",
+              "weight": 1
+            }
+          ],
+          "context": {
+            "from": "a",
+            "to": "b",
+            "sender_incarnation": 1,
+            "send_sequence": 2,
+            "operations": [
+              "y"
+            ]
+          }
+        },
+        "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+        "context_digest": "bd2f0f787f60d6573c731eac0af6a3d2c9b77255e47b5865748c82f1c50fe14c",
+        "selection": {
+          "option": "deliver"
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "control",
+      "messages": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x"
+          ]
+        },
+        {
+          "sequence": 2,
+          "at": 20,
+          "operations": [
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "insert-irrelevant",
+      "messages": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "noise"
+          ]
+        },
+        {
+          "sequence": 2,
+          "at": 11,
+          "operations": [
+            "x"
+          ]
+        },
+        {
+          "sequence": 3,
+          "at": 20,
+          "operations": [
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reorder",
+      "messages": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "y"
+          ]
+        },
+        {
+          "sequence": 2,
+          "at": 20,
+          "operations": [
+            "x"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "shift-time",
+      "messages": [
+        {
+          "sequence": 1,
+          "at": 11,
+          "operations": [
+            "x"
+          ]
+        },
+        {
+          "sequence": 2,
+          "at": 21,
+          "operations": [
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "merge-conflicting-batch",
+      "messages": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x",
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "split-retry",
+      "messages": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x"
+          ]
+        },
+        {
+          "sequence": 2,
+          "at": 11,
+          "operations": [
+            "x"
+          ]
+        },
+        {
+          "sequence": 3,
+          "at": 20,
+          "operations": [
+            "y"
+          ]
+        }
+      ]
+    }
+  ],
+  "observations": [
+    {
+      "case": "control",
+      "method": "fault-interval",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "y"
+      ],
+      "misaligned_operations": 0,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "bd2f0f787f60d6573c731eac0af6a3d2c9b77255e47b5865748c82f1c50fe14c",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "control",
+      "method": "occurrence-v1",
+      "status": "completed",
+      "projection": {
+        "fidelity": "exact",
+        "directives": 2,
+        "projected": 2,
+        "fixed": 0,
+        "additional": [],
+        "unmatched": []
+      },
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "y"
+      ],
+      "misaligned_operations": 0,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "bd2f0f787f60d6573c731eac0af6a3d2c9b77255e47b5865748c82f1c50fe14c",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "control",
+      "method": "causal-operation-prototype",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "y"
+      ],
+      "misaligned_operations": 0,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "bd2f0f787f60d6573c731eac0af6a3d2c9b77255e47b5865748c82f1c50fe14c",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "insert-irrelevant",
+      "method": "fault-interval",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "noise"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "deliver"
+        },
+        {
+          "sequence": 3,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "x",
+        "y"
+      ],
+      "misaligned_operations": 2,
+      "failure_preserved": false,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "noise"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "c426f330cfda972502cde8201ceb3b4a8aa553c6dc784138e7bf0e1d069b4a33",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "deliver"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/3/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 3,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "061dba771d5aa6c0fefa1af63d716529f64ea3e830fbe2e5305f992669d9d526",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "insert-irrelevant",
+      "method": "occurrence-v1",
+      "status": "completed",
+      "projection": {
+        "fidelity": "partial",
+        "directives": 2,
+        "projected": 2,
+        "fixed": 0,
+        "additional": [
+          {
+            "kind": "network_loss",
+            "from": "a",
+            "to": "b",
+            "incarnation": "1",
+            "occurrence": "3"
+          }
+        ],
+        "unmatched": []
+      },
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "noise"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "deliver"
+        },
+        {
+          "sequence": 3,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "x",
+        "y"
+      ],
+      "misaligned_operations": 2,
+      "failure_preserved": false,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "noise"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "c426f330cfda972502cde8201ceb3b4a8aa553c6dc784138e7bf0e1d069b4a33",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "deliver"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/3/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 3,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "061dba771d5aa6c0fefa1af63d716529f64ea3e830fbe2e5305f992669d9d526",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "insert-irrelevant",
+      "method": "causal-operation-prototype",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "noise"
+          ],
+          "selection": "deliver"
+        },
+        {
+          "sequence": 2,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 3,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "noise",
+        "y"
+      ],
+      "misaligned_operations": 0,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "noise"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "c426f330cfda972502cde8201ceb3b4a8aa553c6dc784138e7bf0e1d069b4a33",
+            "selection": {
+              "option": "deliver"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/3/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 3,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "061dba771d5aa6c0fefa1af63d716529f64ea3e830fbe2e5305f992669d9d526",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "reorder",
+      "method": "fault-interval",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "y"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 20,
+          "operations": [
+            "x"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "x"
+      ],
+      "misaligned_operations": 2,
+      "failure_preserved": false,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "2ecb53878962c43cf6e02fb223bedadbe15198bcf26ae1fd9da3a4b878145d24",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "reorder",
+      "method": "occurrence-v1",
+      "status": "completed",
+      "projection": {
+        "fidelity": "exact",
+        "directives": 2,
+        "projected": 2,
+        "fixed": 0,
+        "additional": [],
+        "unmatched": []
+      },
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "y"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 20,
+          "operations": [
+            "x"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "x"
+      ],
+      "misaligned_operations": 2,
+      "failure_preserved": false,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "2ecb53878962c43cf6e02fb223bedadbe15198bcf26ae1fd9da3a4b878145d24",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "reorder",
+      "method": "causal-operation-prototype",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        },
+        {
+          "sequence": 2,
+          "at": 20,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        }
+      ],
+      "durable_operations": [
+        "y"
+      ],
+      "misaligned_operations": 0,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "2ecb53878962c43cf6e02fb223bedadbe15198bcf26ae1fd9da3a4b878145d24",
+            "selection": {
+              "option": "deliver"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "drop"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "shift-time",
+      "method": "fault-interval",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "deliver"
+        },
+        {
+          "sequence": 2,
+          "at": 21,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "x",
+        "y"
+      ],
+      "misaligned_operations": 1,
+      "failure_preserved": false,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "deliver"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "bd2f0f787f60d6573c731eac0af6a3d2c9b77255e47b5865748c82f1c50fe14c",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "shift-time",
+      "method": "occurrence-v1",
+      "status": "completed",
+      "projection": {
+        "fidelity": "exact",
+        "directives": 2,
+        "projected": 2,
+        "fixed": 0,
+        "additional": [],
+        "unmatched": []
+      },
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 21,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "y"
+      ],
+      "misaligned_operations": 0,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "bd2f0f787f60d6573c731eac0af6a3d2c9b77255e47b5865748c82f1c50fe14c",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "shift-time",
+      "method": "causal-operation-prototype",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 21,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "y"
+      ],
+      "misaligned_operations": 0,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "bd2f0f787f60d6573c731eac0af6a3d2c9b77255e47b5865748c82f1c50fe14c",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "merge-conflicting-batch",
+      "method": "fault-interval",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x",
+            "y"
+          ],
+          "selection": "drop"
+        }
+      ],
+      "durable_operations": [],
+      "misaligned_operations": 1,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x",
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "6b60352046fdef8c392308e10beec1885001a917dea7f644a8fc0a8df326a733",
+            "selection": {
+              "option": "drop"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "merge-conflicting-batch",
+      "method": "occurrence-v1",
+      "status": "completed",
+      "projection": {
+        "fidelity": "partial",
+        "directives": 2,
+        "projected": 1,
+        "fixed": 0,
+        "additional": [],
+        "unmatched": [
+          {
+            "key": {
+              "kind": "network_loss",
+              "from": "a",
+              "to": "b",
+              "incarnation": "1",
+              "occurrence": "2"
+            },
+            "source_index": "1",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      },
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x",
+            "y"
+          ],
+          "selection": "drop"
+        }
+      ],
+      "durable_operations": [],
+      "misaligned_operations": 1,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x",
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "6b60352046fdef8c392308e10beec1885001a917dea7f644a8fc0a8df326a733",
+            "selection": {
+              "option": "drop"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "merge-conflicting-batch",
+      "method": "causal-operation-prototype",
+      "status": "ineligible",
+      "reason": "conflicting source dispositions in target batch 1",
+      "deliveries": [],
+      "durable_operations": [],
+      "misaligned_operations": 0,
+      "failure_preserved": false,
+      "local_replay_verified": false,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": []
+      }
+    },
+    {
+      "case": "split-retry",
+      "method": "fault-interval",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "deliver"
+        },
+        {
+          "sequence": 3,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "x",
+        "y"
+      ],
+      "misaligned_operations": 1,
+      "failure_preserved": false,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "deliver"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/3/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 3,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "061dba771d5aa6c0fefa1af63d716529f64ea3e830fbe2e5305f992669d9d526",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "split-retry",
+      "method": "occurrence-v1",
+      "status": "completed",
+      "projection": {
+        "fidelity": "partial",
+        "directives": 2,
+        "projected": 2,
+        "fixed": 0,
+        "additional": [
+          {
+            "kind": "network_loss",
+            "from": "a",
+            "to": "b",
+            "incarnation": "1",
+            "occurrence": "3"
+          }
+        ],
+        "unmatched": []
+      },
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "deliver"
+        },
+        {
+          "sequence": 3,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "x",
+        "y"
+      ],
+      "misaligned_operations": 1,
+      "failure_preserved": false,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "deliver"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/3/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 3,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "061dba771d5aa6c0fefa1af63d716529f64ea3e830fbe2e5305f992669d9d526",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "split-retry",
+      "method": "causal-operation-prototype",
+      "status": "completed",
+      "deliveries": [
+        {
+          "sequence": 1,
+          "at": 10,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 2,
+          "at": 11,
+          "operations": [
+            "x"
+          ],
+          "selection": "drop"
+        },
+        {
+          "sequence": 3,
+          "at": 20,
+          "operations": [
+            "y"
+          ],
+          "selection": "deliver"
+        }
+      ],
+      "durable_operations": [
+        "y"
+      ],
+      "misaligned_operations": 0,
+      "witness": {
+        "invariant": "toy/acknowledged-write-lost",
+        "operation": "x"
+      },
+      "failure_preserved": true,
+      "local_replay_verified": true,
+      "tape": {
+        "schema": "d-raft.decisions/v1",
+        "entries": [
+          {
+            "choice": {
+              "id": "study/send/1/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 1,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "204b975c3a969ccd5487dcd675418d16237389873ad45d2b6b9029f034f9f527",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/2/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 2,
+                "operations": [
+                  "x"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "abed9181dfb80ce926cd781193cfe55fcc1cf79c5b2088de27713a16efe9da67",
+            "selection": {
+              "option": "drop"
+            }
+          },
+          {
+            "choice": {
+              "id": "study/send/3/loss",
+              "kind": "network_loss",
+              "options": [
+                {
+                  "id": "drop",
+                  "weight": 1
+                },
+                {
+                  "id": "deliver",
+                  "weight": 1
+                }
+              ],
+              "context": {
+                "from": "a",
+                "to": "b",
+                "sender_incarnation": 1,
+                "send_sequence": 3,
+                "operations": [
+                  "y"
+                ]
+              }
+            },
+            "domain_digest": "80ce5e0785dd6fa21c5479af9f45cd23af783bb597e7f70affb1a01decd6eeb1",
+            "context_digest": "061dba771d5aa6c0fefa1af63d716529f64ea3e830fbe2e5305f992669d9d526",
+            "selection": {
+              "option": "deliver"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

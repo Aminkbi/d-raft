@@ -47,6 +47,13 @@ production-core adapter, a six-mutant known-fault corpus, and two immutable
 cross-adapter cases. It does not yet establish that the combination is superior
 for real-defect yield or human diagnosis time.
 
+The [first-paper protocol](RESEARCH_PROTOCOL.md) narrows the proposed
+contribution to failure-preserving replay under declared implementation
+changes, with comparative reduction evidence. The synthetic
+[projection study](PROJECTION_STUDY.md) demonstrates why coverage accounting
+alone cannot establish that claim. It does not update this pinned literature
+survey or establish novelty for operation-based matching in isolation.
+
 ## Baseline gaps
 
 The v1 bounded study does not run head-to-head implementations of SAMC, DEMi,

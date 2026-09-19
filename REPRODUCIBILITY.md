@@ -87,6 +87,19 @@ env GOCACHE=/tmp/draft-go-cache \
 verifier's checkout to be the producer commit and does not mistake the
 verifier's current Git state for the producer's provenance.
 
+### Synthetic projection robustness study
+
+```bash
+go run ./cmd/draft-projection-study --verify evaluation/results/projection-v1/result.json
+(cd evaluation/results/projection-v1 && sha256sum -c SHA256SUMS)
+go test ./internal/projectionstudy ./cmd/draft-projection-study
+```
+
+This host-independent development artifact has no performance or production
+effectiveness claim. Its verifier regenerates all fixtures, including the
+exact-coverage causal mismatch and the rejected conflicting batch. See
+[PROJECTION_STUDY.md](PROJECTION_STUDY.md) for the model and interpretation.
+
 ## Regenerating the bounded evaluation
 
 Use the exact producer revision rather than the later report commit:
