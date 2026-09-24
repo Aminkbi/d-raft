@@ -442,11 +442,27 @@ func writeArtifact(path string, run artifact.Run) (err error) {
 	if err = os.Link(temporaryPath, path); err != nil {
 		return err
 	}
+	if err = syncDirectory(directory); err != nil {
+		return fmt.Errorf("artifact exists at %s but directory durability was not confirmed: %w", path, err)
+	}
 	// The destination is committed once the hard link succeeds. A staging-name
 	// cleanup failure must not report publication failure or invite a retry that
 	// can only hit the no-clobber destination.
 	_ = os.Remove(temporaryPath)
 	return nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func usage(writer io.Writer) {

@@ -90,7 +90,9 @@ synthetic development evidence, not production-defect effectiveness results.
 
 The root module is dependency-free and uses no wall-clock sleeps or background
 goroutines. The isolated nested etcd/raft adapter carries its production-core
-dependency. Both target Go 1.26 and declare the current Go 1.26.6 toolchain.
+dependency. Both modules set `go 1.26`, preserving Go 1.26 as the minimum
+supported version, and suggest `toolchain go1.27.1` for development. The
+toolchain suggestion does not raise the `go` directive's minimum version.
 
 See [MUTANTS.md](MUTANTS.md) for the seeded-fault evaluation contract and
 runner trust boundary. See [SEMANTIC_PLANS.md](SEMANTIC_PLANS.md) for the

@@ -613,7 +613,7 @@ func decodeWithLimit(reader io.Reader, maximum int) (Run, error) {
 	return run, nil
 }
 
-// OutcomesEqual compares every result field that exact replay must preserve.
+// OutcomesEqual compares the result fields and violation fingerprints that exact replay must preserve.
 func OutcomesEqual(left, right Outcome) bool {
 	if left.Status != right.Status || left.Steps != right.Steps || left.EndNS != right.EndNS || left.ObservationDigest != right.ObservationDigest || left.Error != right.Error || len(left.Violations) != len(right.Violations) {
 		return false
@@ -652,6 +652,12 @@ func validateScenario(scenario Scenario, members []raft.NodeID, schema string) e
 		previous = action.AtNS
 		if schema != SchemaVersion && (action.votersPresent || action.learnersPresent) {
 			return fmt.Errorf("%w: action %d uses run-v3 role fields", ErrInvalidArtifact, index)
+		}
+		if (action.votersPresent && len(action.Voters) == 0) || (action.learnersPresent && len(action.Learners) == 0) {
+			return fmt.Errorf("%w: action %d has an empty role field", ErrInvalidArtifact, index)
+		}
+		if schema == SchemaVersion && action.Kind != ActionBeginMembership && (action.votersPresent || action.learnersPresent) {
+			return fmt.Errorf("%w: action %d uses unrelated role fields", ErrInvalidArtifact, index)
 		}
 		switch action.Kind {
 		case ActionPropose:
@@ -744,6 +750,9 @@ func validateConfiguration(config Configuration, allowRoles bool) error {
 	}
 	if !allowRoles && (config.votersPresent || config.learnersPresent || len(config.Voters) != 0 || len(config.Learners) != 0) {
 		return fmt.Errorf("%w: voter roles require run v3", ErrInvalidArtifact)
+	}
+	if allowRoles && ((config.votersPresent && len(config.Voters) == 0) || (config.learnersPresent && len(config.Learners) == 0)) {
+		return fmt.Errorf("%w: configuration has an empty role field", ErrInvalidArtifact)
 	}
 	if allowRoles && (len(config.Voters) > 0 || len(config.Learners) > 0) && !raft.ValidateMembership(raft.Membership{Voters: config.Voters, Learners: config.Learners}, canonical) {
 		return fmt.Errorf("%w: invalid initial voter or learner sets", ErrInvalidArtifact)
@@ -882,7 +891,7 @@ func partitionGroupsSorted(groups [][]raft.NodeID) bool {
 		left, right := groups[index-1], groups[index]
 		limit := min(len(left), len(right))
 		comparison := 0
-		for item := 0; item < limit; item++ {
+		for item := range limit {
 			if left[item] < right[item] {
 				comparison = -1
 				break
@@ -908,7 +917,7 @@ func partitionGroupsSorted(groups [][]raft.NodeID) bool {
 
 func validDigest(value string) bool {
 	decoded, err := hex.DecodeString(value)
-	return err == nil && len(decoded) == sha256.Size
+	return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value
 }
 
 func buildRevision() (string, bool) {

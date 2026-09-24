@@ -360,7 +360,7 @@ func activationFile(pkg string) string {
 
 func nonemptyLines(value string) []string {
 	var lines []string
-	for _, line := range strings.Split(value, "\n") {
+	for line := range strings.SplitSeq(value, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			lines = append(lines, line)
 		}
@@ -404,7 +404,7 @@ func validateRepository(ctx context.Context, directory string, manifest Manifest
 }
 
 func modulePath(goMod []byte) string {
-	for _, line := range strings.Split(string(goMod), "\n") {
+	for line := range strings.SplitSeq(string(goMod), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && fields[0] == "module" {
 			return fields[1]
@@ -469,7 +469,7 @@ func rejectSymlinkPath(root, candidate string) error {
 		return errors.New("patch resolves outside the manifest directory")
 	}
 	current := root
-	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+	for component := range strings.SplitSeq(relative, string(filepath.Separator)) {
 		current = filepath.Join(current, component)
 		info, err := os.Lstat(current)
 		if err != nil {
@@ -508,8 +508,7 @@ func runTest(parent context.Context, worktree, pkg, test string) (CommandResult,
 	result := CommandResult{ExitCode: 0, DurationMS: time.Since(start).Milliseconds(), Output: buffer.String(), OutputTruncated: buffer.truncated}
 	if err != nil {
 		result.ExitCode = -1
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
+		if exitError, ok := errors.AsType[*exec.ExitError](err); ok {
 			result.ExitCode = exitError.ExitCode()
 		}
 		if ctx.Err() != nil {
@@ -566,7 +565,7 @@ func sensitiveEnvironmentName(name string) bool {
 }
 
 func hasExactMarker(output, marker string) bool {
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == marker || strings.HasSuffix(line, ": "+marker) {
 			return true

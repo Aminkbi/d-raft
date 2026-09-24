@@ -135,7 +135,7 @@ func (n *Node) Step(input Input) ([]Effect, error) {
 		if index < math.MaxUint64 {
 			suffix = n.entriesFrom(index + 1)
 		}
-		n.state.Snapshot = Snapshot{LastIncludedIndex: index, LastIncludedTerm: term, Members: slices.Clone(n.members), Data: slices.Clone(input.SnapshotData), Membership: CloneMembership(n.membershipAt(index))}
+		n.state.Snapshot = Snapshot{LastIncludedIndex: index, LastIncludedTerm: term, Members: slices.Clone(n.members), Data: slices.Clone(input.SnapshotData), Membership: n.membershipAt(index)}
 		n.state.Log = suffix
 		n.refreshMembership()
 		dirty = true
@@ -156,6 +156,18 @@ func (n *Node) Step(input Input) ([]Effect, error) {
 		return []Effect{{Kind: EffectPersist, WriteToken: token, State: cloneState(n.state)}}, nil
 	}
 	return effects, nil
+}
+
+func (n *Node) Role() Role {
+	return n.role
+}
+
+func (n *Node) AwaitingPersistence() bool {
+	return n.pending != nil
+}
+
+func (n *Node) IsVoter() bool {
+	return n.membership.isVoter(n.id)
 }
 
 // Status returns a deep copy of the node's observable state.
@@ -269,10 +281,10 @@ func (n *Node) beginMembership(voters, learners []NodeID) (bool, []Effect, error
 		}
 	}
 	joint := Membership{
-		Voters:         slices.Clone(target.Voters),
+		Voters:         target.Voters,
 		VotersOutgoing: slices.Clone(n.membership.Voters),
 		Learners:       jointLearners,
-		LearnersNext:   slices.Clone(target.Learners),
+		LearnersNext:   target.Learners,
 	}
 	return n.appendMembershipEntry(EntryConfigJoint, joint)
 }
@@ -292,7 +304,7 @@ func (n *Node) finalizeMembership() (bool, []Effect, error) {
 }
 
 func (n *Node) appendMembershipEntry(entryType EntryType, membership Membership) (bool, []Effect, error) {
-	entry := Entry{Index: n.lastIndex() + 1, Term: n.state.HardState.CurrentTerm, Type: entryType, Membership: CloneMembership(membership)}
+	entry := Entry{Index: n.lastIndex() + 1, Term: n.state.HardState.CurrentTerm, Type: entryType, Membership: membership}
 	if _, ok := transitionMembership(n.membership, entry, n.members); !ok {
 		return false, nil, fmt.Errorf("%w: invalid membership transition", ErrInvalidInput)
 	}
@@ -556,7 +568,7 @@ func (n *Node) handleInstallSnapshot(message Message) (bool, []Effect) {
 			suffix = n.entriesFrom(snapshot.LastIncludedIndex + 1)
 		}
 	}
-	candidateMembership := CloneMembership(snapshotMembership)
+	candidateMembership := snapshotMembership
 	for _, entry := range suffix {
 		var transitionOK bool
 		candidateMembership, transitionOK = transitionMembership(candidateMembership, entry, n.members)

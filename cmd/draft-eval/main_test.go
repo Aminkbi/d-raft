@@ -224,13 +224,11 @@ func TestConcurrentPublishIsNoClobber(t *testing.T) {
 	var successes atomic.Int32
 	var wait sync.WaitGroup
 	for range 2 {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
+		wait.Go(func() {
 			if writeResult(path, result) == nil {
 				successes.Add(1)
 			}
-		}()
+		})
 	}
 	wait.Wait()
 	if successes.Load() != 1 {

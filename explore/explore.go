@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"slices"
 
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/decision"
@@ -241,8 +242,8 @@ func dfs(run internalRunner, bounds Bounds, cache *stateCache) (result Result, e
 			if sampled {
 				result.SampledDomains++
 			}
-			for index := len(selections) - 1; index >= 0; index-- {
-				entry, err := decision.NewEntry(open.Choice, selections[index])
+			for _, selection := range slices.Backward(selections) {
+				entry, err := decision.NewEntry(open.Choice, selection)
 				if err != nil {
 					return result, err
 				}

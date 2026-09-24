@@ -216,7 +216,7 @@ func TestDuplicateApplicationCommandFailsWithoutChangingCommitment(t *testing.T)
 	if err := cluster.Propose(command); err != nil {
 		t.Fatal(err)
 	}
-	for step := 0; step < 1_000; step++ {
+	for step := range 1_000 {
 		ran, stepErr := cluster.Step()
 		if stepErr != nil {
 			if !errors.Is(stepErr, apporacle.ErrDuplicateCommand) {

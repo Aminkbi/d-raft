@@ -8,11 +8,17 @@ research release.
 
 ## Toolchains and modules
 
-- Root module: Go 1.26, toolchain Go 1.26.6, no third-party runtime dependency.
-- Nested production adapter: Go 1.26.6, `go.etcd.io/raft/v3` v3.7.0 and
-  `google.golang.org/protobuf` v1.36.11, pinned by `go.mod` and `go.sum`.
+- Root module: minimum Go 1.26, suggested toolchain Go 1.27.1, and no
+  third-party runtime dependency.
+- Nested production adapter: minimum Go 1.26, suggested toolchain Go 1.27.1,
+  `go.etcd.io/raft/v3` v3.7.0, and `google.golang.org/protobuf` v1.36.11, pinned
+  by `go.mod` and `go.sum`.
 - Supported evaluation-publication platform: Linux. Artifact decoding and the
   rest of the root library are not restricted to Linux.
+
+The `go 1.26` directive in both modules preserves the minimum supported Go
+version. The `toolchain go1.27.1` directive selects the development toolchain
+without changing that minimum.
 
 Start from a tagged checkout with a clean working tree:
 
@@ -34,6 +40,8 @@ one block do not carry into the next.
 
 ```bash
 gofmt -d .
+go mod verify
+go mod tidy -diff
 go test ./...
 go vet ./...
 go test -race ./...
@@ -43,6 +51,8 @@ go test -race ./...
 
 ```bash
 cd adapters/etcdraft
+go mod verify
+go mod tidy -diff
 go test ./...
 go test -count=20 ./...
 go vet ./...

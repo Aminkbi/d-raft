@@ -638,7 +638,7 @@ func readTrimmedFile(path string, limit int64) (string, error) {
 
 func parseCPUModel(cpuInfo string) string {
 	for _, preferred := range []string{"model name", "Hardware", "Processor"} {
-		for _, line := range strings.Split(cpuInfo, "\n") {
+		for line := range strings.SplitSeq(cpuInfo, "\n") {
 			key, value, found := strings.Cut(line, ":")
 			if found && strings.TrimSpace(key) == preferred && strings.TrimSpace(value) != "" {
 				return strings.TrimSpace(value)
@@ -649,7 +649,7 @@ func parseCPUModel(cpuInfo string) string {
 }
 
 func parseMemoryBytes(memoryInfo string) (uint64, error) {
-	for _, line := range strings.Split(memoryInfo, "\n") {
+	for line := range strings.SplitSeq(memoryInfo, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 3 || fields[0] != "MemTotal:" || fields[2] != "kB" {
 			continue

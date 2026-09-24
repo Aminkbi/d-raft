@@ -263,7 +263,7 @@ func (c *Checker) Observe(observation Observation) []Violation {
 	c.checkLogs(observation.At, nodes)
 	for _, node := range nodes {
 		if node.Up && node.Status != nil && node.Status.Role == raft.Leader && !node.Status.AwaitingPersistence {
-			c.checkLeader(observation.At, node, nodes)
+			c.checkLeader(observation.At, node)
 		}
 	}
 	return cloneViolations(c.violations[start:])
@@ -489,21 +489,15 @@ func (c *Checker) checkLogs(at time.Duration, nodes []NodeObservation) {
 			if start > limit {
 				continue
 			}
+			firstConflict, hasConflict := start, false
 			for index := start; ; index++ {
 				leftEntry, leftOK := stateEntryAt(left.Durable, index)
 				rightEntry, rightOK := stateEntryAt(right.Durable, index)
-				if leftOK && rightOK && leftEntry.Term == rightEntry.Term {
-					for prefix := start; ; prefix++ {
-						leftPrefix, leftExists := stateEntryAt(left.Durable, prefix)
-						rightPrefix, rightExists := stateEntryAt(right.Durable, prefix)
-						if !leftExists || !rightExists || !entriesEqual(leftPrefix, rightPrefix) {
-							c.add(at, LogMatching, []raft.NodeID{left.ID, right.ID}, map[string]any{"matching_index": index, "conflicting_index": prefix, "term": leftEntry.Term})
-							break
-						}
-						if prefix == index {
-							break
-						}
-					}
+				if !hasConflict && (!leftOK || !rightOK || !entriesEqual(leftEntry, rightEntry)) {
+					firstConflict, hasConflict = index, true
+				}
+				if hasConflict && leftOK && rightOK && leftEntry.Term == rightEntry.Term {
+					c.add(at, LogMatching, []raft.NodeID{left.ID, right.ID}, map[string]any{"matching_index": index, "conflicting_index": firstConflict, "term": leftEntry.Term})
 				}
 				if index == limit {
 					break
@@ -513,7 +507,7 @@ func (c *Checker) checkLogs(at time.Duration, nodes []NodeObservation) {
 	}
 }
 
-func (c *Checker) checkLeader(at time.Duration, node NodeObservation, nodes []NodeObservation) {
+func (c *Checker) checkLeader(at time.Duration, node NodeObservation) {
 	status := node.Status
 	if previous, exists := c.leaders[status.Term]; exists && previous != node.ID {
 		c.add(at, ElectionSafety, []raft.NodeID{previous, node.ID}, map[string]any{"term": status.Term, "first": previous, "second": node.ID})
@@ -533,19 +527,20 @@ func (c *Checker) checkLeader(at time.Duration, node NodeObservation, nodes []No
 	if !raft.ValidateMembership(membership, c.members) || !membership.HasQuorum(certified) {
 		c.add(at, ElectionCertificate, []raft.NodeID{node.ID}, map[string]any{"term": status.Term, "votes": certified, "membership": membership})
 	}
+	committedIndexes := make([]uint64, 0, len(c.committed))
 	for index, committed := range c.committed {
-		if status.Term < committed.CommitTerm {
-			continue
+		if status.Term >= committed.CommitTerm && index > status.Snapshot.LastIncludedIndex {
+			committedIndexes = append(committedIndexes, index)
 		}
-		if index <= status.Snapshot.LastIncludedIndex {
-			continue
-		}
+	}
+	slices.Sort(committedIndexes)
+	for _, index := range committedIndexes {
+		committed := c.committed[index]
 		entry, exists := statusEntryAt(status, index)
 		if !exists || !entriesEqual(entry, committed.Entry) {
 			c.add(at, LeaderCompleteness, []raft.NodeID{node.ID, committed.Node}, map[string]any{"term": status.Term, "index": index, "committed": committed})
 		}
 	}
-	_ = nodes
 }
 
 func stateLastIndex(state raft.PersistentState) uint64 {

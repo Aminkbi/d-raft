@@ -3,6 +3,7 @@ package sim
 import (
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 )
@@ -234,6 +235,9 @@ func TestRouterValidation(t *testing.T) {
 	}
 	if _, err := NewRouter[int](New(), NewRand(0), LinkConfig{LossProbability: 2}, nil); !errors.Is(err, ErrInvalidLink) {
 		t.Fatalf("invalid link error = %v", err)
+	}
+	if _, err := NewRouter[int](New(), NewRand(0), LinkConfig{LossProbability: math.NaN()}, nil); !errors.Is(err, ErrInvalidLink) {
+		t.Fatalf("NaN link error = %v", err)
 	}
 	if _, err := NewPartitionMatrix([]NodeID{"a"}, [][]bool{}); !errors.Is(err, ErrInvalidMatrix) {
 		t.Fatalf("invalid matrix error = %v", err)

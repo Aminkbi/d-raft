@@ -5,6 +5,7 @@ package etcdraft
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -105,7 +106,7 @@ func (c Config) validate() error {
 			return ErrInvalidConfig
 		}
 	}
-	if c.Network.MinLatency < 0 || c.Network.MaxLatency < c.Network.MinLatency || c.Network.LossProbability < 0 || c.Network.LossProbability > 1 || c.Network.LossProbability != c.Network.LossProbability {
+	if c.Network.MinLatency < 0 || c.Network.MaxLatency < c.Network.MinLatency || c.Network.LossProbability < 0 || c.Network.LossProbability > 1 || math.IsNaN(c.Network.LossProbability) {
 		return ErrInvalidConfig
 	}
 	if c.Application != nil {

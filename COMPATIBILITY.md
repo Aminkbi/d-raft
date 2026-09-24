@@ -6,10 +6,13 @@ be consistent in the current implementation.
 
 ## Supported Go version
 
-The module follows the current stable Go release and currently declares Go
-1.26 with toolchain 1.26.6. CI resolves the version from `go.mod` and requests
-the latest available matching toolchain. A future minor release of d-raft may
-raise the required stable Go version.
+Both modules declare `go 1.26`, preserving Go 1.26 as the minimum supported
+Go version, and suggest `toolchain go1.27.1`. The `go` directive controls the
+language version and minimum supported Go release; the `toolchain` directive
+selects the development toolchain without raising that minimum. CI tests the
+current Go 1.27.1 toolchain and separately checks the Go 1.26 compatibility
+floor. A future minor release of d-raft may raise the required stable Go
+version.
 
 ## Go API compatibility
 
@@ -60,7 +63,9 @@ The current value is `d-raft.trace/v1`. Within v1:
 - virtual times and durations are integer nanoseconds;
 - full-width unsigned random values use strings to avoid JSON precision loss;
   and
-- packet messages use their ordinary Go JSON representation.
+- packet messages use their ordinary Go JSON representation;
+- duplicate JSON object names and documents exceeding the bounded nesting
+  limit are rejected before typed decoding.
 
 The trace-v1 guarantee covers the trace envelope and its known fields. Embedded
 protocol payload shape is adapter data; when a trace accompanies a run artifact,
@@ -93,7 +98,9 @@ configuration, seeds, codec, decision/checker/observation schemas, toolchain and
 outcome, canonical observation digest, and invariant witnesses. Every run
 schema is decoded strictly and rejects fields outside that version. Additive
 schema changes therefore require a new reader mode or schema version rather
-than being silently ignored.
+than being silently ignored. Observation digests use canonical lowercase
+hexadecimal, and role fields must be present only on the v3 records where they
+carry meaning.
 
 Cross-version replay is an evaluated capability, not a blanket guarantee. A
 successful replay means the target adapter consumed the semantic tape and

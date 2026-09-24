@@ -140,21 +140,47 @@ func TestCommandBinaryRoundTripAndIsolation(t *testing.T) {
 			t.Fatalf("round trip = %#v, want %#v", decoded, expected)
 		}
 
+		wantEncoded := cloneBytes(encoded)
 		if len(command.Key) > 0 {
 			command.Key[0] ^= 0xff
 		}
 		if len(command.Value) > 0 {
 			command.Value[0] ^= 0xff
 		}
-		again, err := DecodeCommand(encoded)
-		if err != nil || !reflect.DeepEqual(again, expected) {
-			t.Fatalf("input mutation changed encoding: %#v, err=%v", again, err)
+		if !bytes.Equal(encoded, wantEncoded) {
+			t.Fatal("command mutation changed encoding")
 		}
 
-		encoded[0] ^= 0xff
-		if !reflect.DeepEqual(decoded, expected) {
-			t.Fatal("encoded-buffer mutation changed decoded command")
+		keyOffset := len(commandMagic) + 1 + len(CommandID{}) + 4 + 4
+		if len(decoded.Key) > 0 {
+			encoded[keyOffset] ^= 0xff
 		}
+		if len(decoded.Value) > 0 {
+			encoded[keyOffset+len(decoded.Key)] ^= 0xff
+		}
+		if !reflect.DeepEqual(decoded, expected) {
+			t.Fatal("key or value mutation in encoded input changed decoded command")
+		}
+	}
+}
+
+func TestApplyEncodedOwnsWirePayload(t *testing.T) {
+	machine := New()
+	encoded := mustEncodeCommand(t, put(0, []byte("key"), []byte("value")))
+	expected := cloneBytes(encoded)
+	if _, err := machine.ApplyEncoded(encoded); err != nil {
+		t.Fatal(err)
+	}
+	keyOffset := len(commandMagic) + 1 + len(CommandID{}) + 4 + 4
+	encoded[keyOffset] ^= 0xff
+	encoded[keyOffset+len("key")] ^= 0xff
+	blocks := machine.Blocks()
+	if len(blocks) != 1 || !bytes.Equal(blocks[0].Command, expected) {
+		t.Fatalf("stored command changed with input: %x", blocks[0].Command)
+	}
+	decoded, err := DecodeCommand(blocks[0].Command)
+	if err != nil || string(decoded.Key) != "key" || string(decoded.Value) != "value" {
+		t.Fatalf("stored command = %#v, err=%v", decoded, err)
 	}
 }
 
@@ -184,7 +210,7 @@ func TestCommandValidationAndSizeBounds(t *testing.T) {
 
 func TestDecodeCommandRejectsMalformedTruncatedAndTrailingData(t *testing.T) {
 	valid := mustEncodeCommand(t, put(0, []byte("key"), []byte("value")))
-	for length := 0; length < len(valid); length++ {
+	for length := range valid {
 		if _, err := DecodeCommand(valid[:length]); !errors.Is(err, ErrInvalidCommand) {
 			t.Fatalf("truncation at %d error = %v", length, err)
 		}
@@ -628,12 +654,20 @@ func FuzzDecodeCommand(f *testing.F) {
 		if !bytes.Equal(data, encoded) {
 			t.Fatal("decoder accepted a non-canonical command")
 		}
-		if len(data) > 0 {
-			before := cloneBytes(command.Key)
-			data[0] ^= 0xff
-			if !bytes.Equal(command.Key, before) {
-				t.Fatal("decoded command aliases its input")
-			}
+		beforeKey := cloneBytes(command.Key)
+		beforeValue := cloneBytes(command.Value)
+		keyOffset := len(commandMagic) + 1 + len(CommandID{}) + 4 + 4
+		if len(data) > keyOffset {
+			data[keyOffset] ^= 0xff
+		}
+		if len(data) > keyOffset+len(command.Key) {
+			data[keyOffset+len(command.Key)] ^= 0xff
+		}
+		if !bytes.Equal(command.Key, beforeKey) {
+			t.Fatal("decoded command key aliases its input")
+		}
+		if !bytes.Equal(command.Value, beforeValue) {
+			t.Fatal("decoded command value aliases its input")
 		}
 	})
 }

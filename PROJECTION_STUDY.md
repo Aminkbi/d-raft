@@ -82,7 +82,7 @@ it does not retroactively classify the production corpus's matched messages.
 
 ## Reproduce and verify
 
-Use the repository's declared Go 1.26.6 toolchain. From the root:
+Use the repository's declared Go 1.27.1 toolchain. From the root:
 
 ```sh
 go run ./cmd/draft-projection-study > /tmp/projection-study.json

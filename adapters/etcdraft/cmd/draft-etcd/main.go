@@ -203,7 +203,26 @@ func writeArtifact(path string, run artifact.Run) (err error) {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Link(temporaryPath, path)
+	if err := os.Link(temporaryPath, path); err != nil {
+		return err
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("artifact exists at %s but directory durability was not confirmed: %w", path, err)
+	}
+	return nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 func usage(writer io.Writer) {

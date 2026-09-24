@@ -24,9 +24,10 @@ func TestChainKnownAnswer(t *testing.T) {
 	if got, want := chain.Digest(), "29236a8bb4f2bef96e4847b9c7e115263847fe72ad34d82061f840aabc701952"; got != want {
 		t.Fatalf("chain digest = %s, want %s", got, want)
 	}
+	chainDigest := chain.Digest()
 	blocks[1].Digest = "mutated"
-	if chain.Digest() == "mutated" {
-		t.Fatal("Blocks returned an alias")
+	if got := chain.Digest(); got != chainDigest {
+		t.Fatalf("digest after Blocks mutation = %s, want %s", got, chainDigest)
 	}
 }
 

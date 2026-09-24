@@ -64,8 +64,8 @@ Verify the immutable bundle:
   --source-run corpus/cross-adapter/v1/loss-2pct-seed-20260814/source.run.json \
   --in corpus/cross-adapter/v1/loss-2pct-seed-20260814/cross
 
-sha256sum -c \
-  corpus/cross-adapter/v1/loss-2pct-seed-20260814/SHA256SUMS
+(cd corpus/cross-adapter/v1/loss-2pct-seed-20260814 && \
+  sha256sum -c SHA256SUMS)
 ```
 
 `cross.manifest.json` is the bundle commit marker. `SHA256SUMS` additionally

@@ -166,7 +166,3 @@ func traceTime(value time.Duration) *int64 {
 	nanoseconds := int64(value)
 	return &nanoseconds
 }
-
-func traceBool(value bool) *bool {
-	return &value
-}

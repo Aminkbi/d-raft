@@ -360,7 +360,7 @@ func (c *Cluster) submit(name rootraft.NodeID, input queuedInput) error {
 	var err error
 	switch input.kind {
 	case inputMessage:
-		err = process.raw.Step(proto.Clone(input.message).(*pb.Message))
+		err = process.raw.Step(input.message)
 	case inputCampaign:
 		err = process.raw.Campaign()
 	case inputHeartbeat:
@@ -584,10 +584,9 @@ func (c *Cluster) send(process *process, source *pb.Message) error {
 		return fmt.Errorf("%w: numeric target %d", ErrUnknownNode, source.GetTo())
 	}
 	process.sendSequence++
-	message := proto.Clone(source).(*pb.Message)
 	_, err := c.router.Send(sim.NodeID(process.name), sim.NodeID(to), envelope{
 		SenderIncarnation: process.incarnation, SendSequence: process.sendSequence,
-		From: process.name, To: to, Message: message,
+		From: process.name, To: to, Message: source,
 	})
 	return err
 }
@@ -612,6 +611,7 @@ func (c *Cluster) drain(name rootraft.NodeID) {
 	process := c.processes[name]
 	for process.up && process.pending == nil && len(process.mailbox) > 0 {
 		input := process.mailbox[0]
+		process.mailbox[0] = queuedInput{}
 		process.mailbox = process.mailbox[1:]
 		if err := c.submit(name, input); err != nil {
 			c.fail(err)

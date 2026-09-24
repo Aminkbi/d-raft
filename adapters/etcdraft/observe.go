@@ -275,15 +275,13 @@ func (c *Cluster) observe() {
 		c.fail(err)
 		return
 	}
-	checkerObservation := observation
-	checkerObservation.Nodes = slices.Clone(observation.Nodes)
-	for index := range checkerObservation.Nodes {
+	for index := range observation.Nodes {
 		// Public RawNode state is insufficient to reconstruct election
 		// certificates or the complete volatile log. The v1 production-core
 		// profile therefore enables only the common durable/application checks.
-		checkerObservation.Nodes[index].Status = nil
+		observation.Nodes[index].Status = nil
 	}
-	newViolations := c.checker.Observe(checkerObservation)
+	newViolations := c.checker.Observe(observation)
 	for _, violation := range newViolations {
 		violation.Nodes = slices.Clone(violation.Nodes)
 		violation.Evidence = slices.Clone(violation.Evidence)

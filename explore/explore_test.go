@@ -161,7 +161,7 @@ func TestDFSWithCacheMergesDiamondState(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 
-	for repetition := 0; repetition < 20; repetition++ {
+	for range 20 {
 		again, err := DFSWithCache(runner, bounds, CacheBounds{MaxEntries: 10, MaxBytes: 10_000})
 		if err != nil {
 			t.Fatal(err)

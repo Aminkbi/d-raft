@@ -2,7 +2,7 @@ module github.com/aminkbi/d-raft/adapters/etcdraft
 
 go 1.26
 
-toolchain go1.26.6
+toolchain go1.27.1
 
 require (
 	github.com/aminkbi/d-raft v0.0.0

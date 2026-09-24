@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 
@@ -193,9 +194,7 @@ func (m *Machine) Clone() (*Machine, error) {
 	for key, value := range m.state {
 		clone.state[key] = cloneBytes(value)
 	}
-	for id, digest := range m.seen {
-		clone.seen[id] = digest
-	}
+	maps.Copy(clone.seen, m.seen)
 	for index, block := range m.history {
 		clone.history[index] = cloneBlock(block)
 	}
@@ -303,11 +302,7 @@ func (m *Machine) ApplyEncoded(data []byte) (Block, error) {
 	if err != nil {
 		return Block{}, err
 	}
-	canonical, err := EncodeCommand(command)
-	if err != nil {
-		return Block{}, err
-	}
-	return m.applyCanonical(command, canonical)
+	return m.applyCanonical(command, data)
 }
 
 func (m *Machine) applyCanonical(command Command, canonical []byte) (Block, error) {

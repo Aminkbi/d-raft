@@ -3,6 +3,7 @@ package check
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/aminkbi/d-raft/raft"
@@ -128,6 +129,81 @@ func TestCheckerFindsCommittedConflict(t *testing.T) {
 	))
 	if !hasViolation(violations, CommittedConflict) || !hasViolation(violations, LogMatching) {
 		t.Fatalf("violations = %+v", violations)
+	}
+}
+
+func TestCheckerOrdersLeaderCompletenessViolations(t *testing.T) {
+	t.Parallel()
+
+	const committedCount = 64
+	log := make([]raft.Entry, committedCount)
+	for index := range log {
+		log[index] = Entry(uint64(index+1), 1, "")
+	}
+	hard := raft.HardState{CurrentTerm: 1, VotedFor: "a", CommitIndex: committedCount}
+	leader := nodeWithLog("a", hard, log)
+	leader.Up = true
+	leader.Status = &raft.Status{ID: "a", Role: raft.Leader, Term: 1, VotedFor: "a", CommitIndex: committedCount}
+
+	var got []uint64
+	for _, violation := range New([]raft.NodeID{"a", "b", "c"}).Observe(observation(leader)) {
+		if violation.ID != LeaderCompleteness {
+			continue
+		}
+		var evidence struct {
+			Index uint64 `json:"index"`
+		}
+		if err := json.Unmarshal(violation.Evidence, &evidence); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, evidence.Index)
+	}
+	want := make([]uint64, committedCount)
+	for index := range want {
+		want[index] = uint64(index + 1)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("leader completeness indexes = %v, want %v", got, want)
+	}
+}
+
+func TestCheckerReportsFirstLogPrefixConflictOncePerMatchingIndex(t *testing.T) {
+	t.Parallel()
+
+	checker := New([]raft.NodeID{"a", "b", "c"})
+	left := NodeObservation{ID: "a", Durable: raft.PersistentState{Log: []raft.Entry{
+		Entry(1, 1, "same"),
+		Entry(2, 2, "left"),
+		Entry(3, 3, "same"),
+		Entry(4, 3, "same"),
+	}}}
+	right := NodeObservation{ID: "b", Durable: raft.PersistentState{Log: []raft.Entry{
+		Entry(1, 1, "same"),
+		Entry(2, 3, "right"),
+		Entry(3, 3, "same"),
+		Entry(4, 3, "same"),
+	}}}
+
+	checker.checkLogs(0, []NodeObservation{left, right})
+
+	var got [][3]uint64
+	for _, violation := range checker.Violations() {
+		if violation.ID != LogMatching {
+			t.Fatalf("unexpected violation = %+v", violation)
+		}
+		var evidence struct {
+			MatchingIndex    uint64 `json:"matching_index"`
+			ConflictingIndex uint64 `json:"conflicting_index"`
+			Term             uint64 `json:"term"`
+		}
+		if err := json.Unmarshal(violation.Evidence, &evidence); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, [3]uint64{evidence.MatchingIndex, evidence.ConflictingIndex, evidence.Term})
+	}
+	want := [][3]uint64{{3, 2, 3}, {4, 2, 3}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("log matching evidence = %v, want %v", got, want)
 	}
 }
 

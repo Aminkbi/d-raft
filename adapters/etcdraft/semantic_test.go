@@ -332,7 +332,7 @@ func portablePutAction(t *testing.T, at time.Duration, ordinal byte) artifact.Ac
 	t.Helper()
 	command, err := apporacle.EncodeCommand(apporacle.Command{
 		ID: apporacle.CommandID{15: ordinal}, Operation: apporacle.Put,
-		Key: []byte(fmt.Sprintf("key-%d", ordinal)), Value: []byte(fmt.Sprintf("value-%d", ordinal)),
+		Key: fmt.Appendf(nil, "key-%d", ordinal), Value: fmt.Appendf(nil, "value-%d", ordinal),
 	})
 	if err != nil {
 		t.Fatal(err)

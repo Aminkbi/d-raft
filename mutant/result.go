@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"slices"
+
+	"github.com/aminkbi/d-raft/internal/strictjson"
 )
 
 // Classification is the closed outcome vocabulary for one mutant.
@@ -90,12 +92,18 @@ type ClassificationInput struct {
 
 // DecodeResult strictly decodes and validates one result document.
 func DecodeResult(r io.Reader) (Result, error) {
+	if r == nil {
+		return Result{}, errors.New("read result: nil reader")
+	}
 	data, err := io.ReadAll(io.LimitReader(r, (64<<20)+1))
 	if err != nil {
 		return Result{}, fmt.Errorf("read result: %w", err)
 	}
 	if len(data) > 64<<20 {
 		return Result{}, errors.New("result exceeds 67108864 bytes")
+	}
+	if err := strictjson.RejectDuplicateNames(data); err != nil {
+		return Result{}, fmt.Errorf("decode result: %w", err)
 	}
 	var result Result
 	decoder := json.NewDecoder(bytes.NewReader(data))

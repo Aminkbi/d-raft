@@ -104,7 +104,7 @@ func ExecuteWithFrontier(scenario artifact.Scenario, configuration artifact.Conf
 	if err != nil {
 		return artifact.Outcome{}, nil, err
 	}
-	before := len(recorder.Tape().Entries)
+	before := recorder.Len()
 	err = cluster.Bootstrap()
 	if errors.Is(err, decision.ErrOpenChoice) {
 		frontier, encodeErr := encodeFrontier(scenario, configuration, 0, preEvent, decisionsSince(recorder, before))
@@ -180,7 +180,7 @@ func executeScheduledCore(cluster *raftsim.Cluster, scenario artifact.Scenario, 
 			if stateErr != nil {
 				return artifact.Outcome{}, nil, stateErr
 			}
-			before = len(recorder.Tape().Entries)
+			before = recorder.Len()
 		}
 		ran, err := cluster.Step()
 		if ran {
@@ -269,11 +269,7 @@ func encodeFrontier(scenario artifact.Scenario, configuration artifact.Configura
 }
 
 func decisionsSince(recorder *decision.Recorder, before int) []decision.Entry {
-	tape := recorder.Tape()
-	if before < 0 || before > len(tape.Entries) {
-		return nil
-	}
-	return decision.CloneTape(decision.Tape{Schema: decision.SchemaVersion, Entries: tape.Entries[before:]}).Entries
+	return recorder.Suffix(before)
 }
 
 func applyAction(cluster *raftsim.Cluster, action artifact.Action) error {

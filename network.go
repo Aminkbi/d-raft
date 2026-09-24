@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,7 +48,7 @@ func (c LinkConfig) Validate() error {
 	if c.MinLatency < 0 || c.MaxLatency < c.MinLatency {
 		return fmt.Errorf("%w: latency range [%s, %s]", ErrInvalidLink, c.MinLatency, c.MaxLatency)
 	}
-	if c.LossProbability < 0 || c.LossProbability > 1 || c.LossProbability != c.LossProbability {
+	if c.LossProbability < 0 || c.LossProbability > 1 || math.IsNaN(c.LossProbability) {
 		return fmt.Errorf("%w: loss probability %v", ErrInvalidLink, c.LossProbability)
 	}
 	return nil
@@ -382,7 +383,7 @@ func (r *Router[M]) SetPartition(matrix *PartitionMatrix) {
 	event := TraceEvent{
 		Kind:            TracePartitionChanged,
 		AtNS:            traceTime(r.sim.Now()),
-		PartitionActive: traceBool(matrix != nil),
+		PartitionActive: new(matrix != nil),
 	}
 	if matrix != nil {
 		event.PartitionNodes = matrix.Nodes()
@@ -421,10 +422,10 @@ func (r *Router[M]) CanonicalState() (RouterState, error) {
 		state.Links = append(state.Links, canonicalLink(key.from, key.to, link))
 	}
 	slices.SortFunc(state.Links, func(left, right CanonicalLinkState) int {
-		if order := stringCompare(string(left.From), string(right.From)); order != 0 {
+		if order := cmp.Compare(left.From, right.From); order != 0 {
 			return order
 		}
-		return stringCompare(string(left.To), string(right.To))
+		return cmp.Compare(left.To, right.To)
 	})
 	if r.partition != nil {
 		state.PartitionActive = true
@@ -433,10 +434,10 @@ func (r *Router[M]) CanonicalState() (RouterState, error) {
 			state.Allowed = append(state.Allowed, CanonicalRouteState{From: key.from, To: key.to})
 		}
 		slices.SortFunc(state.Allowed, func(left, right CanonicalRouteState) int {
-			if order := stringCompare(string(left.From), string(right.From)); order != 0 {
+			if order := cmp.Compare(left.From, right.From); order != 0 {
 				return order
 			}
-			return stringCompare(string(left.To), string(right.To))
+			return cmp.Compare(left.To, right.To)
 		})
 	}
 	return state, nil
@@ -444,16 +445,6 @@ func (r *Router[M]) CanonicalState() (RouterState, error) {
 
 func canonicalLink(from, to NodeID, link LinkConfig) CanonicalLinkState {
 	return CanonicalLinkState{From: from, To: to, MinLatencyNS: int64(link.MinLatency), MaxLatencyNS: int64(link.MaxLatency), LossProbabilityBits: math.Float64bits(link.LossProbability)}
-}
-
-func stringCompare(left, right string) int {
-	if left < right {
-		return -1
-	}
-	if left > right {
-		return 1
-	}
-	return 0
 }
 
 // Send submits a packet to the simulated network.

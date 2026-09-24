@@ -12,6 +12,7 @@ import (
 	"math"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/internal/strictjson"
 )
 
 const DefaultMaxRecordBytes = 16 << 20
@@ -128,6 +129,11 @@ func (d *Decoder) Next() (Record, error) {
 	line = bytes.TrimSuffix(line, []byte{'\r'})
 	if len(bytes.TrimSpace(line)) == 0 {
 		d.err = fmt.Errorf("%w at line %d: blank line", ErrInvalidRecord, d.line)
+		return Record{}, d.err
+	}
+
+	if err := strictjson.RejectDuplicateNames(line); err != nil {
+		d.err = fmt.Errorf("%w at line %d: %w", ErrInvalidRecord, d.line, err)
 		return Record{}, d.err
 	}
 

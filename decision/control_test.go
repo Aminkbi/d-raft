@@ -32,6 +32,39 @@ func TestPrefixDeciderOpensAfterExactPrefix(t *testing.T) {
 	}
 }
 
+func TestRecorderSuffixIsIndependent(t *testing.T) {
+	t.Parallel()
+
+	choice := Choice{ID: "suffix", Kind: NetworkLoss, Options: []Option{{ID: "deliver", Weight: 1}}, Context: []byte(`{"node":"a"}`)}
+	recorder := NewRecorder(fixedDecider{selection: Selection{Option: "deliver"}})
+	if _, err := recorder.Choose(choice); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Len() != 1 {
+		t.Fatalf("recorder length = %d, want 1", recorder.Len())
+	}
+	suffix := recorder.Suffix(0)
+	if len(suffix) != 1 {
+		t.Fatalf("suffix length = %d, want 1", len(suffix))
+	}
+	suffix[0].Choice.Options[0].ID = "changed"
+	suffix[0].Choice.Context[0] = '['
+	suffix[0].Selection.Option = "changed"
+	tape := recorder.Tape()
+	if tape.Entries[0].Choice.Options[0].ID != "deliver" || string(tape.Entries[0].Choice.Context) != `{"node":"a"}` || tape.Entries[0].Selection.Option != "deliver" {
+		t.Fatalf("suffix mutation escaped recorder: %+v", tape.Entries[0])
+	}
+	if empty := recorder.Suffix(1); empty == nil || len(empty) != 0 {
+		t.Fatalf("empty suffix = %#v", empty)
+	}
+	if suffix := recorder.Suffix(-1); suffix != nil {
+		t.Fatalf("negative suffix = %#v", suffix)
+	}
+	if suffix := recorder.Suffix(2); suffix != nil {
+		t.Fatalf("out-of-range suffix = %#v", suffix)
+	}
+}
+
 func TestPrefixThenAndGuidedFallback(t *testing.T) {
 	t.Parallel()
 

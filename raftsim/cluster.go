@@ -349,7 +349,6 @@ func NewPaused(config Config) (*Cluster, error) {
 		cluster.processes[id] = process
 	}
 	for _, id := range members {
-		id := id
 		if err := router.Register(sim.NodeID(id), func(packet sim.Packet[Envelope]) {
 			cluster.receive(id, packet)
 		}); err != nil {
@@ -448,14 +447,15 @@ func (c *Cluster) ApplicationCommitment(id raft.NodeID) (apporacle.Commitment, e
 // reported as no unique leader rather than silently selecting one.
 func (c *Cluster) Leader() (raft.NodeID, bool) {
 	var leader raft.NodeID
-	for _, status := range c.Statuses() {
-		if status.Role != raft.Leader {
+	for _, id := range c.members {
+		process := c.processes[id]
+		if !process.up || process.node.Role() != raft.Leader {
 			continue
 		}
 		if leader != "" {
 			return "", false
 		}
-		leader = status.ID
+		leader = id
 	}
 	return leader, leader != ""
 }
@@ -479,7 +479,7 @@ func (c *Cluster) ProposeTo(id raft.NodeID, data []byte) error {
 	if !process.up {
 		return fmt.Errorf("%w: %q", ErrNodeDown, id)
 	}
-	if process.node.Status().Role != raft.Leader {
+	if process.node.Role() != raft.Leader {
 		return raft.ErrNotLeader
 	}
 	if c.config.Application != nil {
@@ -562,7 +562,7 @@ func (c *Cluster) BeginMembershipChangeTo(id raft.NodeID, voters, learners []raf
 	if !process.up {
 		return fmt.Errorf("%w: %q", ErrNodeDown, id)
 	}
-	if process.node.Status().Role != raft.Leader {
+	if process.node.Role() != raft.Leader {
 		return raft.ErrNotLeader
 	}
 	if err := c.submit(id, queuedInput{input: raft.Input{Kind: raft.InputBeginMembership, Voters: slices.Clone(voters), Learners: slices.Clone(learners)}, incarnation: process.incarnation}); err != nil {
@@ -591,7 +591,7 @@ func (c *Cluster) FinalizeMembershipChangeTo(id raft.NodeID) error {
 	if !process.up {
 		return fmt.Errorf("%w: %q", ErrNodeDown, id)
 	}
-	if process.node.Status().Role != raft.Leader {
+	if process.node.Role() != raft.Leader {
 		return raft.ErrNotLeader
 	}
 	if err := c.submit(id, queuedInput{input: raft.Input{Kind: raft.InputFinalizeMembership}, incarnation: process.incarnation}); err != nil {
@@ -815,14 +815,18 @@ func (c *Cluster) submit(id raft.NodeID, queued queuedInput) error {
 	if !process.up || queued.incarnation != process.incarnation {
 		return nil
 	}
-	if process.node.Status().AwaitingPersistence {
+	if process.node.AwaitingPersistence() {
 		process.mailbox = append(process.mailbox, queued)
 		return nil
 	}
 	if !c.queuedInputIsCurrent(process, queued) {
 		return nil
 	}
-	before := process.node.Status()
+	beforeRole := process.node.Role()
+	var before raft.Status
+	if c.config.Trace != nil {
+		before = process.node.Status()
+	}
 	c.trace(id, sim.TraceProtocolInput, inputAction(queued.input), queued.input)
 	effects, err := process.node.Step(queued.input)
 	if err != nil {
@@ -831,9 +835,12 @@ func (c *Cluster) submit(id raft.NodeID, queued queuedInput) error {
 	if err := c.processEffects(id, effects); err != nil {
 		return err
 	}
-	after := process.node.Status()
-	c.trace(id, sim.TraceProtocolState, "transition", map[string]any{"before": before, "after": after})
-	c.syncRoleTimers(process, before.Role, after.Role)
+	afterRole := process.node.Role()
+	if c.config.Trace != nil {
+		after := process.node.Status()
+		c.trace(id, sim.TraceProtocolState, "transition", map[string]any{"before": before, "after": after})
+	}
+	c.syncRoleTimers(process, beforeRole, afterRole)
 	return nil
 }
 
@@ -848,7 +855,7 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 			process.persistGeneration++
 			generation := process.persistGeneration
 			incarnation := process.incarnation
-			state := raft.ClonePersistentState(effect.State)
+			state := effect.State
 			token := effect.WriteToken
 			delay, err := c.chooseDuration(
 				fmt.Sprintf("storage/%s/%d/%d", id, incarnation, generation),
@@ -912,7 +919,7 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 			c.trace(id, sim.TracePersistence, "scheduled", map[string]any{"token": token, "completion_at_ns": int64(c.simulator.Now() + delay)})
 		case raft.EffectSend:
 			process.sendSequence++
-			message := raft.CloneMessage(effect.Message)
+			message := effect.Message
 			envelope := Envelope{SenderIncarnation: process.incarnation, SendSequence: process.sendSequence, Message: message}
 			if _, err := c.router.Send(sim.NodeID(id), sim.NodeID(message.To), envelope); err != nil {
 				return err
@@ -939,7 +946,7 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 				}
 			}
 			process.store.AppliedIndex = effect.Entry.Index
-			process.store.Applied = append(process.store.Applied, raft.CloneEntry(effect.Entry))
+			process.store.Applied = append(process.store.Applied, effect.Entry)
 			process.application = application
 		case raft.EffectInstallSnapshot:
 			if effect.Snapshot.LastIncludedIndex < process.store.AppliedIndex {
@@ -1024,7 +1031,7 @@ func applyApplicationEntry(application *apporacle.Machine, entry raft.Entry) err
 
 func (c *Cluster) drain(id raft.NodeID) {
 	process := c.processes[id]
-	for process.up && !process.node.Status().AwaitingPersistence && len(process.mailbox) > 0 {
+	for process.up && !process.node.AwaitingPersistence() && len(process.mailbox) > 0 {
 		queued := process.mailbox[0]
 		copy(process.mailbox, process.mailbox[1:])
 		process.mailbox[len(process.mailbox)-1] = queuedInput{}
@@ -1042,7 +1049,7 @@ func (c *Cluster) resetElectionTimer(id raft.NodeID) error {
 		c.simulator.Cancel(process.electionEvent)
 		process.electionEvent = 0
 	}
-	if !process.node.Status().Membership.IsVoter(id) {
+	if !process.node.IsVoter() {
 		return nil
 	}
 	process.electionGeneration++
@@ -1069,7 +1076,7 @@ func (c *Cluster) resetElectionTimer(id raft.NodeID) error {
 		return err
 	}
 	eventID, err := c.simulator.ScheduleTagged(delay, tag, func(*sim.Simulator) {
-		if !process.up || process.incarnation != incarnation || process.electionGeneration != generation || process.node.Status().Role == raft.Leader {
+		if !process.up || process.incarnation != incarnation || process.electionGeneration != generation || process.node.Role() == raft.Leader {
 			return
 		}
 		process.electionEvent = 0
@@ -1097,7 +1104,7 @@ func (c *Cluster) resetHeartbeatTimer(id raft.NodeID) error {
 		return err
 	}
 	eventID, err := c.simulator.ScheduleTagged(c.config.HeartbeatInterval, tag, func(*sim.Simulator) {
-		if !process.up || process.incarnation != incarnation || process.heartbeatGeneration != generation || process.node.Status().Role != raft.Leader {
+		if !process.up || process.incarnation != incarnation || process.heartbeatGeneration != generation || process.node.Role() != raft.Leader {
 			return
 		}
 		process.heartbeatEvent = 0
@@ -1118,9 +1125,9 @@ func (c *Cluster) queuedInputIsCurrent(process *process, queued queuedInput) boo
 	}
 	switch queued.timer {
 	case electionTimer:
-		return queued.generation == process.electionGeneration && process.node.Status().Role != raft.Leader
+		return queued.generation == process.electionGeneration && process.node.Role() != raft.Leader
 	case heartbeatTimer:
-		return queued.generation == process.heartbeatGeneration && process.node.Status().Role == raft.Leader
+		return queued.generation == process.heartbeatGeneration && process.node.Role() == raft.Leader
 	default:
 		return true
 	}
@@ -1250,7 +1257,7 @@ func semanticNetworkContext(packet sim.Packet[Envelope], link sim.LinkConfig) ne
 		From: packet.From, To: packet.To,
 		SenderIncarnation: packet.Message.SenderIncarnation,
 		SendSequence:      packet.Message.SendSequence,
-		Message:           raft.CloneMessage(packet.Message.Message),
+		Message:           packet.Message.Message,
 		MinLatencyNS:      int64(link.MinLatency), MaxLatencyNS: int64(link.MaxLatency),
 		LossProbability: link.LossProbability,
 	}

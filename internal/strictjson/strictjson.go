@@ -26,7 +26,46 @@ var (
 func RejectDuplicateNames(document []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(document))
 	decoder.UseNumber()
-	return scanValue(decoder, 0)
+	err := scanValue(decoder, 0)
+	if err != nil && !errors.Is(err, ErrDuplicateName) && exceedsNestingDepth(document) {
+		return ErrNestingTooDeep
+	}
+	return err
+}
+
+func exceedsNestingDepth(document []byte) bool {
+	depth := 0
+	inString := false
+	escaped := false
+	for _, value := range document {
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch value {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch value {
+		case '"':
+			inString = true
+		case '[', '{':
+			depth++
+			if depth > maxNestingDepth {
+				return true
+			}
+		case ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return false
 }
 
 func scanValue(decoder *json.Decoder, depth int) error {

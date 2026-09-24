@@ -15,10 +15,13 @@ and any effect on determinism or trace compatibility.
 Use the toolchain declared by `go.mod`, then run:
 
 ```bash
-gofmt -w .
+test -z "$(gofmt -l .)"
+go mod verify
+go mod tidy -diff
 go test ./...
 go vet ./...
 go test -bench . -benchmem ./...
+(cd adapters/etcdraft && go mod verify && go mod tidy -diff && go test ./... && go vet ./...)
 ```
 
 New behavior needs focused tests. Any change to random sampling, event order,

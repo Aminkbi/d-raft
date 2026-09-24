@@ -89,8 +89,8 @@ func portableFaultsV1() (artifact.Scenario, artifact.Configuration, error) {
 		encoded, err := apporacle.EncodeCommand(apporacle.Command{
 			ID:        apporacle.CommandID{15: ordinal},
 			Operation: apporacle.Put,
-			Key:       []byte(fmt.Sprintf("key-%d", ordinal)),
-			Value:     []byte(fmt.Sprintf("value-%d", ordinal)),
+			Key:       fmt.Appendf(nil, "key-%d", ordinal),
+			Value:     fmt.Appendf(nil, "value-%d", ordinal),
 		})
 		if err != nil {
 			return err

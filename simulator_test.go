@@ -37,6 +37,11 @@ func TestCanonicalStateRequiresTagsAndPreservesEqualTimeOrder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		for _, event := range state.Events {
+			if event.Order != uint64(event.ID) {
+				t.Fatalf("event order = %d, want ID %d", event.Order, event.ID)
+			}
+		}
 		raw, err := json.Marshal(state)
 		if err != nil {
 			t.Fatal(err)
@@ -109,6 +114,21 @@ func TestSimulatorCancelMaintainsHeap(t *testing.T) {
 	want := []int{1, 5, 7, 8, 4, 2}
 	if !slicesEqual(got, want) {
 		t.Fatalf("execution order = %v, want %v", got, want)
+	}
+}
+
+func TestClockReturnsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	simulator := New()
+	mustScheduleAt(t, simulator, time.Millisecond, func(*Simulator) {})
+	if _, err := simulator.RunUntil(time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	clock := simulator.Clock()
+	*clock = Clock{}
+	if simulator.Now() != time.Millisecond {
+		t.Fatalf("mutating Clock changed simulator time to %s", simulator.Now())
 	}
 }
 
@@ -209,7 +229,7 @@ func TestHeapPropertyUnderMixedSchedulingAndCancellation(t *testing.T) {
 
 	simulator.Run()
 	var want []EventID
-	for at := time.Duration(0); at < 250; at++ {
+	for at := range time.Duration(250) {
 		for _, event := range expected {
 			if !event.canceled && event.at == at {
 				want = append(want, event.id)

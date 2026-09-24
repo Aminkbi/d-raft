@@ -164,6 +164,21 @@ func TestArtifactRejectsNoncanonicalAndUnsupportedMetadata(t *testing.T) {
 	if err := run.Validate(); !errors.Is(err, ErrInvalidArtifact) {
 		t.Fatalf("identifier error = %v", err)
 	}
+	run = validRun()
+	run.Outcome.ObservationDigest = strings.ToUpper(run.Outcome.ObservationDigest)
+	if err := run.Validate(); !errors.Is(err, ErrInvalidArtifact) {
+		t.Fatalf("uppercase digest error = %v", err)
+	}
+	run = validRun()
+	run.Configuration.votersPresent = true
+	if err := run.Validate(); !errors.Is(err, ErrInvalidArtifact) {
+		t.Fatalf("empty configuration role error = %v", err)
+	}
+	run = validRun()
+	run.Scenario.Actions = []Action{{Kind: ActionSnapshot, Node: "a", votersPresent: true}}
+	if err := run.Validate(); !errors.Is(err, ErrInvalidArtifact) {
+		t.Fatalf("unrelated action role error = %v", err)
+	}
 }
 
 func TestArtifactRejectsAggregatePayloadBeforeEncoding(t *testing.T) {
@@ -344,7 +359,6 @@ func TestLegacyArtifactsRejectPresentV3RoleFields(t *testing.T) {
 		{"action empty", strings.Replace(encoded.String(), `"kind":"snapshot"`, `"kind":"snapshot","voters":[]`, 1)},
 		{"action null", strings.Replace(encoded.String(), `"kind":"snapshot"`, `"kind":"snapshot","learners":null`, 1)},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := Decode(strings.NewReader(test.json)); !errors.Is(err, ErrInvalidArtifact) {

@@ -124,7 +124,6 @@ func TestPatchContentPolicyRejectsForbiddenTargetsAndOperations(t *testing.T) {
 		{"mode change", false, "diff --git a/raft/node.go b/raft/node.go\nold mode 100644\nnew mode 100755\n"},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			if err := validatePatchContent(context.Background(), repository, entry, []byte(test.patch), test.activation); err == nil {

@@ -22,18 +22,7 @@ func (e *OpenChoiceError) Unwrap() error { return ErrOpenChoice }
 
 // NewEntry validates and constructs one self-describing tape entry.
 func NewEntry(choice Choice, selection Selection) (Entry, error) {
-	if err := ValidateSelection(choice, selection); err != nil {
-		return Entry{}, err
-	}
-	domain, err := DomainDigest(choice)
-	if err != nil {
-		return Entry{}, err
-	}
-	context, err := ContextDigest(choice)
-	if err != nil {
-		return Entry{}, err
-	}
-	return Entry{Choice: cloneChoice(choice), DomainDigest: domain, ContextDigest: context, Selection: cloneSelection(selection)}, nil
+	return newEntry(choice, selection)
 }
 
 // PrefixDecider exactly consumes a fixed tape prefix and returns OpenChoiceError

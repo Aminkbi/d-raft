@@ -38,3 +38,12 @@ func TestRejectDuplicateNamesBoundsNesting(t *testing.T) {
 		t.Fatalf("nesting error = %v", err)
 	}
 }
+
+func TestRejectDuplicateNamesAcceptsMaximumNesting(t *testing.T) {
+	t.Parallel()
+
+	document := strings.Repeat("[", maxNestingDepth) + "0" + strings.Repeat("]", maxNestingDepth)
+	if err := RejectDuplicateNames([]byte(document)); err != nil {
+		t.Fatalf("maximum nesting error = %v", err)
+	}
+}

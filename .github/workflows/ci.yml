@@ -8,8 +8,12 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  minimum-go:
+    name: Go 1.26 compatibility
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: local
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -17,14 +21,66 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
-          check-latest: true
+          go-version: '1.26.8'
           cache: true
+          cache-dependency-path: |
+            go.mod
+            adapters/etcdraft/go.mod
+            adapters/etcdraft/go.sum
+
+      - name: Test root module
+        run: go test ./...
+
+      - name: Vet root module
+        run: go vet ./...
+
+      - name: Test etcd/raft adapter
+        working-directory: adapters/etcdraft
+        run: go test ./...
+
+      - name: Vet etcd/raft adapter
+        working-directory: adapters/etcdraft
+        run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.1'
+          cache: true
+          cache-dependency-path: |
+            go.mod
+            adapters/etcdraft/go.mod
+            adapters/etcdraft/go.sum
 
       - name: Check formatting
         run: |
-          gofmt -w .
-          git diff --exit-code
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Verify root module
+        timeout-minutes: 10
+        run: |
+          go mod verify
+          go mod tidy -diff
+
+      - name: Verify etcd/raft module
+        timeout-minutes: 10
+        working-directory: adapters/etcdraft
+        run: |
+          go mod verify
+          go mod tidy -diff
 
       - name: Test
         run: go test ./...

@@ -21,6 +21,24 @@ All notable changes to d-raft are documented here. The project follows
   source failure. Conflicting batches are rejected by the experimental causal
   policy; existing v1 schemas and production adapters are unchanged.
 
+### Changed
+
+- Modernized safe internal paths for Go 1.27.1 while retaining Go 1.26 as the
+  minimum module language/runtime target.
+- Reduced redundant state, message, and decision-tape copies without changing
+  ownership boundaries or deterministic output.
+- Added explicit Go 1.26 compatibility CI coverage and read-only module,
+  formatting, and published-artifact checks.
+
+### Fixed
+
+- Made checker log and leader-completeness witnesses deterministic and removed
+  repeated prefix scans.
+- Hardened trace and mutant decoding against duplicate JSON names and nil
+  readers, and rejected noncanonical artifact digests and role fields.
+- Corrected virtual-clock snapshot ownership and publication short-write and
+  directory-durability handling.
+
 ## [0.1.0] - 2026-08-17
 
 First archival research release by Mohammadamin Khanbabaei (`aminkbi`).

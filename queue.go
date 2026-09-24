@@ -5,7 +5,6 @@ import "time"
 type scheduledEvent struct {
 	id     EventID
 	when   time.Duration
-	order  uint64
 	tag    EventTag
 	action Action
 	index  int
@@ -19,7 +18,7 @@ func (h eventHeap) less(i, j int) bool {
 	if h[i].when != h[j].when {
 		return h[i].when < h[j].when
 	}
-	return h[i].order < h[j].order
+	return h[i].id < h[j].id
 }
 
 func (h eventHeap) swap(i, j int) {

@@ -582,9 +582,14 @@ func publishDocuments(paths []string, documents [][]byte) (err error) {
 		if createErr != nil {
 			return createErr
 		}
-		if _, writeErr := file.Write(encoded); writeErr != nil {
+		written, writeErr := file.Write(encoded)
+		if writeErr != nil {
 			_ = file.Close()
 			return writeErr
+		}
+		if written != len(encoded) {
+			_ = file.Close()
+			return io.ErrShortWrite
 		}
 		if syncErr := file.Sync(); syncErr != nil {
 			_ = file.Close()

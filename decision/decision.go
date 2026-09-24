@@ -124,6 +124,22 @@ func (d *SeedDecider) Choose(choice Choice) (Selection, error) {
 	return Selection{Number: &value}, nil
 }
 
+func newEntry(choice Choice, selection Selection) (Entry, error) {
+	if err := ValidateSelection(choice, selection); err != nil {
+		return Entry{}, err
+	}
+	domain, context, err := canonicalChoiceUnchecked(choice)
+	if err != nil {
+		return Entry{}, err
+	}
+	return Entry{
+		Choice:        cloneChoice(choice),
+		DomainDigest:  digestBytes(domain),
+		ContextDigest: digestBytes(context),
+		Selection:     cloneSelection(selection),
+	}, nil
+}
+
 // Recorder decorates a Decider and records validated choices.
 type Recorder struct {
 	base    Decider
@@ -150,27 +166,29 @@ func (r *Recorder) Choose(choice Choice) (Selection, error) {
 		r.err = err
 		return Selection{}, err
 	}
-	if err := ValidateSelection(choice, selection); err != nil {
-		r.err = err
-		return Selection{}, err
-	}
-	digest, err := DomainDigest(choice)
+	entry, err := newEntry(choice, selection)
 	if err != nil {
 		r.err = err
 		return Selection{}, err
 	}
-	contextDigest, err := ContextDigest(choice)
-	if err != nil {
-		r.err = err
-		return Selection{}, err
-	}
-	r.entries = append(r.entries, Entry{Choice: cloneChoice(choice), DomainDigest: digest, ContextDigest: contextDigest, Selection: cloneSelection(selection)})
+	r.entries = append(r.entries, entry)
 	return selection, nil
 }
 
 // Tape returns an independent snapshot of the recorded decisions.
 func (r *Recorder) Tape() Tape {
 	return cloneTape(Tape{Schema: SchemaVersion, Entries: r.entries})
+}
+
+func (r *Recorder) Len() int {
+	return len(r.entries)
+}
+
+func (r *Recorder) Suffix(start int) []Entry {
+	if start < 0 || start > len(r.entries) {
+		return nil
+	}
+	return cloneEntries(r.entries[start:])
 }
 
 // Err returns the first selection or recording error.
@@ -190,15 +208,14 @@ func NewTapeDecider(tape Tape) (*TapeDecider, error) {
 		return nil, fmt.Errorf("%w: schema %q", ErrTapeMismatch, tape.Schema)
 	}
 	for index, entry := range tape.Entries {
-		domainDigest, err := DomainDigest(entry.Choice)
-		if err != nil || domainDigest != entry.DomainDigest {
+		domain, context, err := canonicalChoice(entry.Choice)
+		if err != nil || digestBytes(domain) != entry.DomainDigest {
 			return nil, fmt.Errorf("%w at choice %d: invalid stored domain", ErrTapeMismatch, index)
 		}
-		contextDigest, err := ContextDigest(entry.Choice)
-		if err != nil || contextDigest != entry.ContextDigest {
+		if digestBytes(context) != entry.ContextDigest {
 			return nil, fmt.Errorf("%w at choice %d: invalid stored context", ErrTapeMismatch, index)
 		}
-		if err := ValidateSelection(entry.Choice, entry.Selection); err != nil {
+		if err := validateSelection(entry.Choice, entry.Selection); err != nil {
 			return nil, fmt.Errorf("%w at choice %d: invalid stored selection: %v", ErrTapeMismatch, index, err)
 		}
 	}
@@ -212,34 +229,20 @@ func (d *TapeDecider) Choose(choice Choice) (Selection, error) {
 		return Selection{}, fmt.Errorf("%w at choice %d: %s", ErrTapeExhausted, d.index, choice.ID)
 	}
 	entry := d.tape.Entries[d.index]
-	actualDomain, err := CanonicalDomain(choice)
+	actualDomain, actualContext, err := canonicalChoice(choice)
 	if err != nil {
 		return Selection{}, err
 	}
-	recordedDomain, err := CanonicalDomain(entry.Choice)
+	recordedDomain, recordedContext, err := canonicalChoiceUnchecked(entry.Choice)
 	if err != nil {
 		return Selection{}, err
 	}
-	actualContext, err := CanonicalContext(choice)
-	if err != nil {
-		return Selection{}, err
-	}
-	recordedContext, err := CanonicalContext(entry.Choice)
-	if err != nil {
-		return Selection{}, err
-	}
-	digest, err := DomainDigest(choice)
-	if err != nil {
-		return Selection{}, err
-	}
-	contextDigest, err := ContextDigest(choice)
-	if err != nil {
-		return Selection{}, err
-	}
+	digest := digestBytes(actualDomain)
+	contextDigest := digestBytes(actualContext)
 	if entry.Choice.ID != choice.ID || entry.Choice.Kind != choice.Kind || !bytes.Equal(recordedDomain, actualDomain) || !bytes.Equal(recordedContext, actualContext) || entry.DomainDigest != digest || entry.ContextDigest != contextDigest {
 		return Selection{}, fmt.Errorf("%w at choice %d: got id=%q kind=%q domain=%q context=%q, want id=%q kind=%q domain=%q context=%q", ErrTapeMismatch, d.index, choice.ID, choice.Kind, digest, contextDigest, entry.Choice.ID, entry.Choice.Kind, entry.DomainDigest, entry.ContextDigest)
 	}
-	if err := ValidateSelection(choice, entry.Selection); err != nil {
+	if err := validateSelection(choice, entry.Selection); err != nil {
 		return Selection{}, fmt.Errorf("%w at choice %d: %v", ErrTapeMismatch, d.index, err)
 	}
 	d.index++
@@ -285,6 +288,10 @@ func ValidateSelection(choice Choice, selection Selection) error {
 	if err := ValidateChoice(choice); err != nil {
 		return err
 	}
+	return validateSelection(choice, selection)
+}
+
+func validateSelection(choice Choice, selection Selection) error {
 	if len(choice.Options) > 0 {
 		if selection.Number != nil || selection.Option == "" {
 			return fmt.Errorf("%w: choice %q requires an option", ErrInvalidChoice, choice.ID)
@@ -308,8 +315,7 @@ func DomainDigest(choice Choice) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	digest := sha256.Sum256(raw)
-	return hex.EncodeToString(digest[:]), nil
+	return digestBytes(raw), nil
 }
 
 // CanonicalDomain returns the exact stable encoding used for domain equality.
@@ -319,13 +325,7 @@ func CanonicalDomain(choice Choice) ([]byte, error) {
 	if err := ValidateChoice(choice); err != nil {
 		return nil, err
 	}
-	canonical := struct {
-		Kind    Kind     `json:"kind"`
-		Options []Option `json:"options,omitempty"`
-		Min     *int64   `json:"min,omitempty"`
-		Max     *int64   `json:"max,omitempty"`
-	}{Kind: choice.Kind, Options: choice.Options, Min: choice.Min, Max: choice.Max}
-	return json.Marshal(canonical)
+	return marshalCanonicalDomain(choice)
 }
 
 // ContextDigest returns the stable identity of a choice's diagnostic semantic
@@ -336,8 +336,7 @@ func ContextDigest(choice Choice) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	digest := sha256.Sum256(canonical)
-	return hex.EncodeToString(digest[:]), nil
+	return digestBytes(canonical), nil
 }
 
 // CanonicalContext returns the compact exact encoding used for context
@@ -347,6 +346,39 @@ func CanonicalContext(choice Choice) ([]byte, error) {
 	if err := ValidateChoice(choice); err != nil {
 		return nil, err
 	}
+	return marshalCanonicalContext(choice)
+}
+
+func canonicalChoice(choice Choice) (domain, context []byte, err error) {
+	if err := ValidateChoice(choice); err != nil {
+		return nil, nil, err
+	}
+	return canonicalChoiceUnchecked(choice)
+}
+
+func canonicalChoiceUnchecked(choice Choice) (domain, context []byte, err error) {
+	domain, err = marshalCanonicalDomain(choice)
+	if err != nil {
+		return nil, nil, err
+	}
+	context, err = marshalCanonicalContext(choice)
+	if err != nil {
+		return nil, nil, err
+	}
+	return domain, context, nil
+}
+
+func marshalCanonicalDomain(choice Choice) ([]byte, error) {
+	canonical := struct {
+		Kind    Kind     `json:"kind"`
+		Options []Option `json:"options,omitempty"`
+		Min     *int64   `json:"min,omitempty"`
+		Max     *int64   `json:"max,omitempty"`
+	}{Kind: choice.Kind, Options: choice.Options, Min: choice.Min, Max: choice.Max}
+	return json.Marshal(canonical)
+}
+
+func marshalCanonicalContext(choice Choice) ([]byte, error) {
 	context := choice.Context
 	if len(context) == 0 {
 		context = json.RawMessage("null")
@@ -356,6 +388,11 @@ func CanonicalContext(choice Choice) ([]byte, error) {
 		return nil, fmt.Errorf("%w: choice %q context: %v", ErrInvalidChoice, choice.ID, err)
 	}
 	return slices.Clone(buffer.Bytes()), nil
+}
+
+func digestBytes(raw []byte) string {
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
 }
 
 func cloneChoice(choice Choice) Choice {
@@ -381,11 +418,15 @@ func cloneSelection(selection Selection) Selection {
 }
 
 func cloneTape(tape Tape) Tape {
-	result := Tape{Schema: tape.Schema, Entries: make([]Entry, len(tape.Entries))}
-	for index, entry := range tape.Entries {
+	return Tape{Schema: tape.Schema, Entries: cloneEntries(tape.Entries)}
+}
+
+func cloneEntries(entries []Entry) []Entry {
+	result := make([]Entry, len(entries))
+	for index, entry := range entries {
 		entry.Choice = cloneChoice(entry.Choice)
 		entry.Selection = cloneSelection(entry.Selection)
-		result.Entries[index] = entry
+		result[index] = entry
 	}
 	return result
 }

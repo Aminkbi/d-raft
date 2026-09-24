@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"testing"
 	"time"
 )
@@ -22,9 +23,7 @@ func TestJSONLTraceCapturesOrderedSimulation(t *testing.T) {
 		MaxLatency: 2 * time.Millisecond,
 	}, func(message map[string]int) map[string]int {
 		clone := make(map[string]int, len(message))
-		for key, value := range message {
-			clone[key] = value
-		}
+		maps.Copy(clone, message)
 		return clone
 	})
 	simulator.SetTraceSink(recorder)

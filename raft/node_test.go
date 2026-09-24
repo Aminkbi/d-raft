@@ -8,6 +8,31 @@ import (
 	"testing"
 )
 
+func TestNodeScalarInspectionMatchesStatus(t *testing.T) {
+	t.Parallel()
+
+	assertMatchesStatus := func(node *Node, wantVoter bool) {
+		t.Helper()
+		status := node.Status()
+		if node.Role() != status.Role || node.AwaitingPersistence() != status.AwaitingPersistence || node.IsVoter() != wantVoter || node.IsVoter() != status.Membership.IsVoter(status.ID) {
+			t.Fatalf("scalar inspection = role %v pending %v voter %v, status = %+v", node.Role(), node.AwaitingPersistence(), node.IsVoter(), status)
+		}
+	}
+
+	node := mustNode(t, "a", []NodeID{"a"}, PersistentState{}, 0)
+	assertMatchesStatus(node, true)
+	effects := mustStep(t, node, Input{Kind: InputElectionTimeout})
+	assertMatchesStatus(node, true)
+	_, _ = acknowledgeOnlyPersist(t, node, effects)
+	assertMatchesStatus(node, true)
+
+	learner, err := New(Config{ID: "c", Members: []NodeID{"a", "b", "c"}, Voters: []NodeID{"a", "b"}, Learners: []NodeID{"c"}}, PersistentState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMatchesStatus(learner, false)
+}
+
 func TestSnapshotMessageJSONV3GoldenAndClone(t *testing.T) {
 	t.Parallel()
 

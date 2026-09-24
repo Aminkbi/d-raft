@@ -1,8 +1,11 @@
 package mutant
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/aminkbi/d-raft/internal/strictjson"
 )
 
 func validManifest() Manifest {
@@ -15,6 +18,10 @@ func validManifest() Manifest {
 			MutantPatch:     Patch{Path: "patches/vote.patch", SHA256: strings.Repeat("2", 64)},
 		}},
 	}
+}
+
+func validManifestDocument() string {
+	return `{"schema":"d-raft.mutant/v1","repository":"example.com/r/raft","base_commit":"` + strings.Repeat("a", 40) + `","mutants":[{"id":"m","package":"./raft","test":"TestM","invariant":{"name":"election-safety","class":"safety"},"activation_patch":{"path":"a.patch","sha256":"` + strings.Repeat("1", 64) + `"},"mutant_patch":{"path":"m.patch","sha256":"` + strings.Repeat("2", 64) + `"}}]}`
 }
 
 func TestManifestValidationIsStrict(t *testing.T) {
@@ -41,7 +48,6 @@ func TestManifestValidationIsStrict(t *testing.T) {
 		}},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			manifest := validManifest()
@@ -64,7 +70,7 @@ func TestManifestAcceptsCanonicalInvariantID(t *testing.T) {
 
 func TestDecodeManifestRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 	t.Parallel()
-	base := `{"schema":"d-raft.mutant/v1","repository":"example.com/r/raft","base_commit":"` + strings.Repeat("a", 40) + `","mutants":[{"id":"m","package":"./raft","test":"TestM","invariant":{"name":"election-safety","class":"safety"},"activation_patch":{"path":"a.patch","sha256":"` + strings.Repeat("1", 64) + `"},"mutant_patch":{"path":"m.patch","sha256":"` + strings.Repeat("2", 64) + `"}}]}`
+	base := validManifestDocument()
 	for _, document := range []string{
 		strings.Replace(base, `"schema":`, `"unknown":true,"schema":`, 1),
 		base + `{}`,
@@ -72,5 +78,42 @@ func TestDecodeManifestRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 		if _, err := DecodeManifest(strings.NewReader(document)); err == nil {
 			t.Fatalf("DecodeManifest accepted %q", document)
 		}
+	}
+}
+
+func TestDecodeManifestRejectsDuplicateNames(t *testing.T) {
+	t.Parallel()
+
+	base := validManifestDocument()
+	if _, err := DecodeManifest(strings.NewReader(base)); err != nil {
+		t.Fatalf("valid manifest: %v", err)
+	}
+	tests := []struct {
+		name        string
+		old         string
+		replacement string
+	}{
+		{"top level", `"schema":`, `"schema":"d-raft.mutant/v1","schema":`},
+		{"escaped nested", `"class":"safety"`, `"class":"safety","cla\u0073s":"safety"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			document := strings.Replace(base, test.old, test.replacement, 1)
+			if document == base {
+				t.Fatalf("replacement %q did not alter document", test.old)
+			}
+			if _, err := DecodeManifest(strings.NewReader(document)); !errors.Is(err, strictjson.ErrDuplicateName) {
+				t.Fatalf("duplicate-name error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodeManifestRejectsNilReader(t *testing.T) {
+	t.Parallel()
+
+	if _, err := DecodeManifest(nil); err == nil || !strings.Contains(err.Error(), "nil reader") {
+		t.Fatalf("nil-reader error = %v", err)
 	}
 }

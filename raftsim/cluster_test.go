@@ -148,6 +148,37 @@ func TestClusterElectsAndReplicates(t *testing.T) {
 	}
 }
 
+func TestStoreAppliedEntriesRemainDeepCopies(t *testing.T) {
+	t.Parallel()
+
+	cluster := mustCluster(t, singleNodeCrashConfig())
+	runUntil(t, cluster, 40*time.Millisecond)
+	proposal := []byte("copy-safe")
+	if err := cluster.Propose(proposal); err != nil {
+		t.Fatal(err)
+	}
+	runUntil(t, cluster, cluster.Simulator().Now()+30*time.Millisecond)
+
+	store, err := cluster.Store("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := len(store.Applied) - 1
+	if last < 0 || last != len(store.State.Log)-1 || !bytes.Equal(store.Applied[last].Data, proposal) {
+		t.Fatalf("applied proposal missing: %+v", store)
+	}
+	store.Applied[last].Data[0] ^= 0xff
+	store.State.Log[last].Data[0] ^= 0xff
+
+	again, err := cluster.Store("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(again.Applied[last].Data, proposal) || !bytes.Equal(again.State.Log[last].Data, proposal) {
+		t.Fatalf("Store returned aliased applied entries: %+v", again)
+	}
+}
+
 func TestPortableApplicationIsOptInAndPreservesLegacyPayloads(t *testing.T) {
 	t.Parallel()
 

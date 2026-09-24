@@ -25,7 +25,7 @@ func testConfig(members ...rootraft.NodeID) Config {
 
 func stepUntil(t *testing.T, cluster *Cluster, limit int, condition func() bool) {
 	t.Helper()
-	for step := 0; step < limit; step++ {
+	for step := range limit {
 		if condition() {
 			return
 		}

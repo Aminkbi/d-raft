@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	sim "github.com/aminkbi/d-raft"
+	"github.com/aminkbi/d-raft/internal/strictjson"
 )
 
 func TestDecoderPreservesFullWidthMessageIntegers(t *testing.T) {
@@ -73,10 +74,72 @@ func TestDecoderRejectsMultipleValues(t *testing.T) {
 	}
 }
 
+func TestDecoderRejectsDuplicateNames(t *testing.T) {
+	t.Parallel()
+
+	base := `{"schema":"d-raft.trace/v1","sequence":1,"kind":"clock_advanced","at_ns":1}`
+	tests := []struct {
+		name        string
+		old         string
+		replacement string
+	}{
+		{"top level", `"schema":`, `"schema":"d-raft.trace/v1","schema":`},
+		{"escaped nested", `"at_ns":1`, `"at_ns":1,"details":{"tag":1,"ta\u0067":2}`},
+	}
+	modes := []struct {
+		name string
+		mode ValidationMode
+	}{
+		{"compatible", ValidateCompatible},
+		{"strict", ValidateStrict},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			t.Parallel()
+			for _, test := range tests {
+				t.Run(test.name, func(t *testing.T) {
+					t.Parallel()
+					document := strings.Replace(base, test.old, test.replacement, 1)
+					if document == base {
+						t.Fatalf("replacement %q did not alter document", test.old)
+					}
+					_, err := NewDecoder(strings.NewReader(document), WithValidation(mode.mode)).Next()
+					if !errors.Is(err, ErrInvalidRecord) || !errors.Is(err, strictjson.ErrDuplicateName) {
+						t.Fatalf("duplicate-name error = %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDecoderRejectsNilReader(t *testing.T) {
+	t.Parallel()
+
+	decoder := NewDecoder(nil)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := decoder.Next(); !errors.Is(err, ErrInvalidRecord) {
+			t.Fatalf("attempt %d error = %v", attempt, err)
+		}
+	}
+}
+
 func TestKnownKindCoverage(t *testing.T) {
 	t.Parallel()
 
-	if !knownKind(sim.TraceProtocolInput) || knownKind("not_real") {
-		t.Fatal("known-kind table is incorrect")
+	kinds := []sim.TraceEventKind{
+		sim.TraceEventScheduled, sim.TraceEventCanceled, sim.TraceEventExecuted, sim.TraceClockAdvanced,
+		sim.TraceRandomDraw, sim.TraceNodeRegistered, sim.TraceNodeUnregistered, sim.TraceLinkSet,
+		sim.TraceLinkReset, sim.TracePartitionChanged, sim.TracePacketScheduled, sim.TracePacketDelivered,
+		sim.TracePacketDropped, sim.TraceProtocolInput, sim.TraceProtocolState, sim.TracePersistence,
+		sim.TraceProcessLifecycle, sim.TraceProtocolDrop,
+	}
+	for _, kind := range kinds {
+		if !knownKind(kind) {
+			t.Errorf("knownKind(%q) = false", kind)
+		}
+	}
+	if knownKind("not_real") {
+		t.Fatal("known-kind table accepted an unknown kind")
 	}
 }

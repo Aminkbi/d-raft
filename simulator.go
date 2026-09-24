@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"math"
@@ -107,7 +108,8 @@ func New() *Simulator {
 
 // Clock returns the simulator's read-only virtual clock.
 func (s *Simulator) Clock() *Clock {
-	return &s.clock
+	clock := s.clock
+	return &clock
 }
 
 // SetTraceSink sets the synchronous machine-readable trace destination.
@@ -185,7 +187,7 @@ func (s *Simulator) scheduleAt(when time.Duration, tag EventTag, action Action) 
 	} else {
 		s.nextID++
 	}
-	event := &scheduledEvent{id: id, when: when, order: uint64(id), tag: tag, action: action}
+	event := &scheduledEvent{id: id, when: when, tag: tag, action: action}
 	if s.pending == nil {
 		s.pending = make(map[EventID]*scheduledEvent)
 	}
@@ -217,22 +219,13 @@ func (s *Simulator) CanonicalState() (SimulatorState, error) {
 		if err := validateEventTag(event.tag); err != nil {
 			return SimulatorState{}, err
 		}
-		state.Events = append(state.Events, PendingEventState{ID: event.id, AtNS: int64(event.when), Order: event.order, Tag: cloneEventTag(event.tag)})
+		state.Events = append(state.Events, PendingEventState{ID: event.id, AtNS: int64(event.when), Order: uint64(event.id), Tag: cloneEventTag(event.tag)})
 	}
 	slices.SortFunc(state.Events, func(left, right PendingEventState) int {
-		if left.AtNS < right.AtNS {
-			return -1
+		if order := cmp.Compare(left.AtNS, right.AtNS); order != 0 {
+			return order
 		}
-		if left.AtNS > right.AtNS {
-			return 1
-		}
-		if left.Order < right.Order {
-			return -1
-		}
-		if left.Order > right.Order {
-			return 1
-		}
-		return 0
+		return cmp.Compare(left.Order, right.Order)
 	})
 	return state, nil
 }

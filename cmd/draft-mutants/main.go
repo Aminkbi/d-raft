@@ -113,5 +113,21 @@ func writeResult(path string, stdout io.Writer, result mutant.Result) error {
 	if err := os.Link(temporaryName, absolute); err != nil {
 		return err
 	}
+	if err := syncDirectory(directory); err != nil {
+		return fmt.Errorf("result exists at %s but directory durability was not confirmed: %w", absolute, err)
+	}
 	return nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }

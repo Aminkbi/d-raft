@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/aminkbi/d-raft/internal/strictjson"
 )
 
 const (
@@ -75,12 +77,18 @@ type Patch struct {
 // DecodeManifest strictly decodes and validates one manifest. Unknown fields,
 // multiple JSON values, and unsupported schema versions are rejected.
 func DecodeManifest(r io.Reader) (Manifest, error) {
+	if r == nil {
+		return Manifest{}, errors.New("read manifest: nil reader")
+	}
 	data, err := io.ReadAll(io.LimitReader(r, (4<<20)+1))
 	if err != nil {
 		return Manifest{}, fmt.Errorf("read manifest: %w", err)
 	}
 	if len(data) > 4<<20 {
 		return Manifest{}, errors.New("manifest exceeds 4194304 bytes")
+	}
+	if err := strictjson.RejectDuplicateNames(data); err != nil {
+		return Manifest{}, fmt.Errorf("decode manifest: %w", err)
 	}
 	var manifest Manifest
 	decoder := json.NewDecoder(bytes.NewReader(data))
