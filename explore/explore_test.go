@@ -152,13 +152,26 @@ func TestDFSWithCacheMergesDiamondState(t *testing.T) {
 	t.Parallel()
 
 	runner := diamondRunner()
-	bounds := Bounds{MaxRuns: 20, MaxDepth: 2, MaxBranchesPerChoice: 2, RangeSamples: 3}
+	bounds := Bounds{MaxRuns: 20, MaxDepth: 3, MaxBranchesPerChoice: 2, RangeSamples: 3}
 	result, err := DFSWithCache(runner, bounds, CacheBounds{MaxEntries: 10, MaxBytes: 10_000})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Runs != 5 || result.OpenChoices != 3 || result.Completed != 2 || result.StatePruned != 1 || result.CacheLookups != 3 || result.CacheHits != 1 || result.CacheMisses != 2 || result.UniqueStates != 2 || result.HashCollisions != 0 {
 		t.Fatalf("result = %+v", result)
+	}
+	plain, err := DFS(func(decider decision.Decider) (artifact.Outcome, error) {
+		outcome, _, err := runner(decider)
+		return outcome, err
+	}, bounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Truncated || result.Truncated || plain.DepthBoundHits != 0 || result.DepthBoundHits != 0 || plain.SampledDomains != 0 || result.SampledDomains != 0 {
+		t.Fatalf("diamond was not fully enumerated: plain=%+v cached=%+v", plain, result)
+	}
+	if result.ViolatingRuns != 1 || plain.ViolatingRuns != 2 || result.FirstViolation == nil || !reflect.DeepEqual(plain.FirstViolation, result.FirstViolation) {
+		t.Fatalf("merging equivalent prefixes changed the first counterexample: plain=%+v cached=%+v", plain, result)
 	}
 
 	for range 20 {
@@ -323,10 +336,16 @@ func diamondRunner() StatefulRunner {
 		if _, err := decider.Choose(routeChoice); err != nil {
 			return artifact.Outcome{}, []byte("root"), err
 		}
-		if _, err := decider.Choose(joinedChoice); err != nil {
+		selection, err := decider.Choose(joinedChoice)
+		if err != nil {
 			return artifact.Outcome{}, []byte("joined"), err
 		}
-		return artifact.Outcome{Status: artifact.OutcomeCompleted}, nil, nil
+		outcome := artifact.Outcome{Status: artifact.OutcomeCompleted}
+		if selection.Option == "drop" {
+			outcome.Status = artifact.OutcomeViolation
+			outcome.Violations = []check.Violation{{Fingerprint: "diamond-target"}}
+		}
+		return outcome, nil, nil
 	}
 }
 

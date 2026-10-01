@@ -11,7 +11,6 @@ import (
 	"github.com/aminkbi/d-raft/apporacle"
 	"github.com/aminkbi/d-raft/artifact"
 	"github.com/aminkbi/d-raft/decision"
-	"github.com/aminkbi/d-raft/explore"
 	"github.com/aminkbi/d-raft/raft"
 	"github.com/aminkbi/d-raft/raftsim"
 )
@@ -190,33 +189,6 @@ func TestReferenceFrontierCapturesMidCallbackOpenChoice(t *testing.T) {
 	}
 	if len(decoded.InEvent) != 0 || !bytes.Contains(decoded.PreEvent, []byte(`"kind":"election_timer"`)) {
 		t.Fatalf("frontier does not identify active election event: %s", frontier)
-	}
-}
-
-func TestCachedAndUncachedReferenceExplorationAgree(t *testing.T) {
-	t.Parallel()
-
-	config := raftsim.DefaultConfig("a")
-	config.ElectionTimeoutMin = 10 * time.Millisecond
-	config.ElectionTimeoutMax = 11 * time.Millisecond
-	config.HeartbeatInterval = 2 * time.Millisecond
-	configuration := artifact.ConfigurationFrom(config)
-	scenario := artifact.Scenario{ID: "cache-parity", Version: "1", DurationNS: int64(25 * time.Millisecond), MaxSteps: 100}
-	bounds := explore.Bounds{MaxRuns: 100, MaxDepth: 2, MaxBranchesPerChoice: 2, RangeSamples: 3}
-	plain, err := explore.DFS(func(decider decision.Decider) (artifact.Outcome, error) {
-		return Execute(scenario, configuration, decider)
-	}, bounds)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cached, err := explore.DFSWithCache(func(decider decision.Decider) (artifact.Outcome, []byte, error) {
-		return ExecuteWithFrontier(scenario, configuration, decider)
-	}, bounds, explore.CacheBounds{MaxEntries: 100, MaxBytes: 1 << 20})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plain.ViolatingRuns != cached.ViolatingRuns || (plain.FirstViolation == nil) != (cached.FirstViolation == nil) || plain.Truncated != cached.Truncated {
-		t.Fatalf("plain=%+v cached=%+v", plain, cached)
 	}
 }
 

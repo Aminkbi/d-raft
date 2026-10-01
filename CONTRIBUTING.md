@@ -15,14 +15,15 @@ and any effect on determinism or trace compatibility.
 Use the toolchain declared by `go.mod`, then run:
 
 ```bash
-test -z "$(gofmt -l .)"
-go mod verify
-go mod tidy -diff
-go test ./...
-go vet ./...
+bash tools/check.sh quick
+bash tools/check.sh evidence # when changing replay, projection, or evidence
 go test -bench . -benchmem ./...
-(cd adapters/etcdraft && go mod verify && go mod tidy -diff && go test ./... && go vet ./...)
 ```
+
+The quick check covers formatting, module integrity/tidiness, tests, and vet in
+both modules. Full verification tiers and race/determinism checks are documented
+in [REPRODUCIBILITY.md](REPRODUCIBILITY.md). For package and contract navigation,
+see [AGENTS.md](AGENTS.md).
 
 New behavior needs focused tests. Any change to random sampling, event order,
 packet lifecycle, or trace output also needs a reproducibility or golden test.

@@ -36,6 +36,12 @@ evaluation binary.
 Run each command block below from the repository root; directory changes in
 one block do not carry into the next.
 
+`bash tools/check.sh quick` runs formatting, module integrity/tidiness, tests,
+and vet for both modules. `bash tools/check.sh evidence` runs the independent
+KV vectors and all published projection, evaluation, and cross-adapter
+verification/checksum commands below. Race checks and repeated determinism
+checks remain separate tiers.
+
 ### Root deterministic implementation
 
 ```bash
@@ -112,17 +118,25 @@ exact-coverage causal mismatch and the rejected conflicting batch. See
 
 ## Regenerating the bounded evaluation
 
-Use the exact producer revision rather than the later report commit:
+Use the exact producer revision and Go 1.26.6 rather than the later report
+commit. Create a separate detached worktree so current work stays in place;
+choose unused source/output paths if these examples already exist:
 
 ```bash
-git checkout 6a685e251794ed8344342bea626e0a4a0942da2f
-test -z "$(git status --porcelain=v1)"
-go build -buildvcs=true \
-  -ldflags=-X=main.version=6a685e251794 \
-  -o /tmp/draft-eval-6a685e251794 ./cmd/draft-eval
-go version -m /tmp/draft-eval-6a685e251794
-/tmp/draft-eval-6a685e251794 --trials 21 --out /tmp/result.json
-/tmp/draft-eval-6a685e251794 --verify /tmp/result.json
+git worktree add --detach /tmp/d-raft-eval-source-6a685e251794 \
+  6a685e251794ed8344342bea626e0a4a0942da2f
+(
+  set -e
+  cd /tmp/d-raft-eval-source-6a685e251794
+  export GOTOOLCHAIN=go1.26.6
+  test -z "$(git status --porcelain=v1)"
+  go build -buildvcs=true \
+    -ldflags=-X=main.version=6a685e251794 \
+    -o /tmp/draft-eval-6a685e251794 ./cmd/draft-eval
+  go version -m /tmp/draft-eval-6a685e251794
+  /tmp/draft-eval-6a685e251794 --trials 21 --out /tmp/result.json
+  /tmp/draft-eval-6a685e251794 --verify /tmp/result.json
+)
 ```
 
 The producer refuses an unknown, malformed, or dirty Git revision before the

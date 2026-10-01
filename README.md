@@ -15,29 +15,16 @@ recording, and package-separated safety checks with structured witnesses.
 The project is created and maintained by
 [Mohammadamin Khanbabaei (`aminkbi`)](https://github.com/aminkbi).
 
-> **Research status:** the deterministic kernel, durable reference Raft model,
-> cluster harness, safety checker, observational trace decoder, and exact
-> semantic decision replay are implemented. Self-describing run artifacts and
-> the research CLI are also usable. Bounded prefix exploration and
-> fingerprint-preserving semantic minimization are implemented. Durable
-> snapshots, safe log compaction, and snapshot-bearing run artifacts are also
-> implemented. Joint-consensus membership changes and learners are implemented,
-> including durable recovery and snapshot-aware configuration state. An
-> experimental adapter for the production-used `go.etcd.io/raft/v3` core is
-> implemented for a declared fixed-membership capability subset. A versioned,
-> portable binary KV application oracle now produces independently checkable
-> state/history commitments in both adapters, including reference snapshot
-> recovery. A versioned six-fault corpus and isolated, repository-pinned
-> runner are implemented with a clean Go 1.26.6 result: three checker-backed
-> safety kills and three separately reported conformance kills. Strict
-> adapter-neutral semantic plans, bilateral capability preflight, projection
-> accounting, normalized outcomes/comparisons, source-provenance verification,
-> and a two-adapter research CLI are implemented. Immutable, CI-verified
-> [cross-adapter control and faulted-workload cases](corpus/cross-adapter/v1/)
-> are published. A clean-provenance 21-trial bounded harness/accounting study,
-> raw trial observations, paired cache contrast, and pinned related-work matrix
-> are also published; real-bug effectiveness and diagnosis-time claims remain
-> outside the measured evidence.
+> **Research status:** the deterministic reference model, durable cluster
+> harness, safety checks, exact replay, bounded exploration, and semantic
+> minimization are implemented, including snapshots and joint membership.
+> An experimental fixed-membership etcd/raft adapter supports portable KV
+> commitments and semantic projection with explicit capability/accounting
+> boundaries. Published evidence includes a [six-fault mutant corpus](MUTANTS.md),
+> [cross-adapter cases](corpus/cross-adapter/v1/), a [21-trial bounded study](EVALUATION.md),
+> and a [synthetic projection study](PROJECTION_STUDY.md). Production-defect
+> effectiveness, comparative reduction benefit, and diagnosis time remain
+> unmeasured; see [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md).
 
 ## Why d-raft?
 
@@ -198,19 +185,21 @@ run horizon; `d-raft.run/v3` bundles those inputs with the tape.
 Build the research CLI and create a self-contained run artifact:
 
 ```bash
-go build -o draft ./cmd/draft
-./draft run --seed 42 --duration 2s --out run.json
-./draft canonical --seed 1 --out portable-faults.json portable-faults-v1
-./draft inspect run.json
-./draft replay run.json
-./draft explore --depth 6 --max-runs 1000
-./draft explore --cache=false --depth 6 --max-runs 1000 # matched baseline
-./draft minimize --out minimized.json failing.json
-
-go build -buildvcs=true -o draft-eval ./cmd/draft-eval
-./draft-eval --trials 21 --out d-raft-evaluation.json
-./draft-eval --verify d-raft-evaluation.json
+mkdir -p .research-bin
+go build -o .research-bin/draft ./cmd/draft
+.research-bin/draft run --seed 42 --duration 2s --out .research-bin/run.json
+.research-bin/draft canonical --seed 1 --out .research-bin/portable-faults.json portable-faults-v1
+.research-bin/draft inspect .research-bin/run.json
+.research-bin/draft replay .research-bin/run.json
+.research-bin/draft explore --depth 6 --max-runs 1000 --out .research-bin/counterexample.json
+.research-bin/draft explore --cache=false --depth 6 --max-runs 1000 --out .research-bin/baseline.json
+# Given an existing artifact containing a violation:
+.research-bin/draft minimize --out .research-bin/minimized.json failing.json
 ```
+
+Scratch outputs stay in ignored `.research-bin/`. To verify the published
+evaluation, run `bash tools/check.sh evidence`. Producing a new evaluation
+requires a clean, VCS-stamped Linux build; follow [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
 
 `draft replay` starts from a clean cluster, consumes the stored choice tape,
 rejects any semantic drift, and verifies the recorded outcome status, step
@@ -273,20 +262,21 @@ after an inadequately cloned send are outside that guarantee. See
 
 ## Development
 
-```bash
-go test ./...
-go vet ./...
-go test -race ./...
+For routine checks of both Go modules, use:
 
-cd adapters/etcdraft
-go test ./...
-go vet ./...
-go test -race ./...
+```bash
+bash tools/check.sh quick
+bash tools/check.sh evidence # published evidence and independent KV vectors
 ```
+
+Root `go test ./...` does not include the nested adapter module. Full CI also
+checks the minimum supported Go version, race detection, and repeated adapter
+determinism; see [the workflow](.github/workflows/ci.yml).
 
 Contributions should include a deterministic regression test and, for protocol
 changes, a crash-boundary test where persistence matters. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md). [AGENTS.md](AGENTS.md) routes agent work to
+the relevant packages and contracts without loading every research document.
 
 ## Prior art and positioning
 

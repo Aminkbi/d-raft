@@ -146,11 +146,30 @@ estimates unless measured against a matched uncached run.
 
 ## Validation gate
 
-Caching is guarded by cache-off/cache-on tests for converging small models and
-a reference-runner smoke scenario, plus deliberate outer-digest collisions and
-canonical-state sensitivity tests. A broader false-merge and fully enumerated
-evaluation matrix remains required; each pair uses the same scenario, adapter,
-schema versions, bounds, seed, and branch order and must produce the same:
+Caching is guarded by cache-off/cache-on tests for converging small models,
+deliberate outer-digest collisions, and canonical-state sensitivity tests.
+`experiment/cache_test.go` fully enumerates tiny reference scenarios covering
+an election/proposal boundary, both persistence crash boundaries, snapshot
+recovery, equal-time crash/restart ordering, and joint membership with a learner.
+It compares complete terminal-outcome sets with caching disabled, enabled, and
+unable to admit entries. Sampling, depth-bound suffix completion, run-budget
+truncation, and event-budget exhaustion fail this gate.
+
+`raftsim/canonical_test.go` supplies a field-omission negative control: removing
+the crash-after-persist flag falsely merges two otherwise identical pending-write
+frontiers whose processes subsequently crash or survive. The diamond-model test
+in `explore/explore_test.go` also exercises actual equivalent-state pruning and
+preserves the first counterexample while reducing duplicate violating runs.
+
+The reference matrix is a bounded regression gate, not a complete check of
+Markov completeness: a mutant omitting canonical state from cache identity
+still passes these reference fixtures. Divergent reference frontiers sharing
+the same open choice, domain, context, and remaining depth are needed to close
+that gap; repeated runs and race checks do not substitute for those controls.
+
+A broader field-omission and fully enumerated evaluation matrix remains
+required; each pair uses the same scenario, adapter, schema versions, bounds,
+seed, and branch order and must produce the same:
 
 - reachable terminal outcomes and violation fingerprints;
 - completion, depth-bound, sampling, and truncation interpretation; and

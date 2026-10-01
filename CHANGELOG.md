@@ -8,6 +8,9 @@ All notable changes to d-raft are documented here. The project follows
 
 ### Added
 
+- Fully enumerated reference cache-parity checks across election, persistence,
+  snapshot, crash/restart, and membership boundaries; a divergent-future
+  field-omission control and a violation-preserving equivalent-state merge test.
 - A focused failure-preserving replay research protocol with explicit defect
   predicates, baselines, exclusions, and production-evaluation decision gates.
 - A deterministic synthetic projection study comparing fault intervals,

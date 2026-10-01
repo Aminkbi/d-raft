@@ -137,20 +137,10 @@ questions and are not pooled with these timing trials:
 
 ## Reproduce and verify
 
-Build from the recorded producer revision and keep the tree clean until the
-binary is created:
-
-```bash
-git checkout 6a685e251794ed8344342bea626e0a4a0942da2f
-go version  # go1.26.6
-go test ./...
-go vet ./...
-go build -buildvcs=true \
-  -ldflags=-X=main.version=6a685e251794 \
-  -o /tmp/draft-eval-6a685e251794 ./cmd/draft-eval
-/tmp/draft-eval-6a685e251794 --trials 21 --out /tmp/result.json
-/tmp/draft-eval-6a685e251794 --verify /tmp/result.json
-```
+Follow the [regeneration recipe](REPRODUCIBILITY.md#regenerating-the-bounded-evaluation)
+for producer revision `6a685e251794ed8344342bea626e0a4a0942da2f` and Go 1.26.6.
+It uses a separate detached worktree, keeps the source clean until the binary
+is built, and leaves the current checkout in place.
 
 Wall-clock fields are expected to change across machines and runs. Raw search
 accounting should remain deterministic for the recorded code, configuration,
