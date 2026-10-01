@@ -1,6 +1,9 @@
 # Failure-preserving replay research protocol
 
-Status: prospective protocol for the first production-defect study. The
+Status: protocol for the first production-defect study. The pinned PR #31
+workflow now exercises the adapter and end-to-end gates for one upstream
+panic case; it is a single-case engineering result, not an effectiveness
+study. The
 synthetic development experiment in [PROJECTION_STUDY.md](PROJECTION_STUDY.md)
 has already been run; this document is not an external preregistration and
 does not present those fixtures as held-out evidence.
@@ -114,6 +117,8 @@ case-level outcomes without population-level effectiveness claims.
    the supported change classes or report the negative result. Claim reduction
    benefit only when actual execution/artifact metrics support it.
 
-The next milestone is gates 2 and 3 for one real defect. New adapters, cache
-optimizations, a diagnosis user study, and general linearizability checking
-are not prerequisites for the bounded first-paper hypothesis.
+The PR #31 runner closes a first adapter/end-to-end case for a production
+panic. The effectiveness gate remains open: the case set, baselines, matched
+budgets, and held-out predicates still need to be frozen before any comparative
+claim. New adapters, cache optimizations, a diagnosis user study, and general
+linearizability checking are not prerequisites for that bounded study.

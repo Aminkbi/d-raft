@@ -26,6 +26,10 @@ This directory is a separate Go module using the root module through
   common checker profile does not prove every reference-model invariant.
 - Exact tapes are adapter/version local. Cross-adapter comparison uses semantic
   projection, negotiated capabilities, and normalized evidence.
+- Causal replay is opt-in: use a causal decider/projector to request operation
+  IDs in network contexts, and reject conflicting batched dispositions before
+  treating a causal report as evidence. Ordinary v1 tapes keep their existing
+  context shape.
 - Bundle publication commits its manifest last. Preserve private, no-clobber
   writes and recovery behavior; read `SEMANTIC_PLANS.md` before changing it.
 

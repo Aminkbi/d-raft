@@ -33,7 +33,7 @@ remain in the linked documents and executable tests.
 | Semantic projection and comparisons | `semanticplan/`, `experiment/semantic.go` | `SEMANTIC_PLANS.md`, `PROJECTION_STUDY.md` |
 | Production-core adapter | `adapters/etcdraft/` | Its scoped `AGENTS.md` and `README.md`, root `ADAPTERS.md` |
 | Mutant execution | `mutant/`, `cmd/draft-mutants/` | `MUTANTS.md` |
-| Evaluation or research claims | `evaluation/`, `internal/projectionstudy/`, corresponding commands | `RESEARCH_PROTOCOL.md`, then `EVALUATION.md` or `PROJECTION_STUDY.md` |
+| Evaluation or research claims | `evaluation/`, `internal/projectionstudy/`, `defect/`, corresponding commands | `RESEARCH_PROTOCOL.md`, then `EVALUATION.md` or `PROJECTION_STUDY.md` |
 
 ## Verification
 
@@ -80,6 +80,16 @@ work around a local environment problem.
 - Keep strict schema/resource validation, full-width integer encoding, outcome
   verification, and witness fingerprints. Changes need the relevant version
   and compatibility review plus focused regression tests.
+- Causal replay is an opt-in mode. Use `decision.NewCausalSeedDecider` when
+  producing a source tape, `semanticplan.NewCausalProjector` when projecting
+  it, and `decision.NewCausalTapeDecider` for the target-local replay check.
+  Operation IDs are added to network choice contexts only in that mode;
+  ordinary v1 occurrence artifacts retain their existing context shape.
+  Conflicting operation dispositions in one indivisible target batch and
+  directives outside a fixed target loss domain are rejected before evidence
+  is published. Durable causal envelopes use the versioned
+  `d-raft.causal-evidence/v1` schema and must be decoded through its strict
+  verifier.
 - Published corpora and results are historical evidence. Preserve their bytes
   and producer provenance; use a new version/path for a new experiment.
 - Evaluation publication needs a clean, VCS-stamped Linux build. Follow

@@ -45,6 +45,12 @@ Unsupported scenarios are rejected before cluster construction and before any
 semantic decision is consumed. `SupportedCapabilities()` is the machine-readable
 summary; the table above also records intentional configuration restrictions.
 
+The experimental causal path is separate from portable v1 projection. A source
+tape produced with `decision.NewCausalSeedDecider` can be projected through
+`ExecuteCausalPlan`; the returned causal report is not a claim of cross-version
+exactness. Network contexts include portable command IDs and namespaced
+term/index IDs for adapter-boundary log evidence only in this opt-in mode.
+
 ## Determinism and timer policy
 
 etcd/raft v3.7.0 uses process-global `crypto/rand` for its internal randomized

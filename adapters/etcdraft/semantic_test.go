@@ -1,6 +1,7 @@
 package etcdraft
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"testing"
@@ -72,6 +73,87 @@ func TestPortableSemanticPlanExecutesAndComparesAcrossAdapters(t *testing.T) {
 	}
 	if rightExecution.Outcome == nil || !artifact.OutcomesEqual(*rightExecution.Outcome, replayed) {
 		t.Fatalf("etcd target-local replay changed outcome:\n got %#v\nwant %#v", replayed, rightExecution.Outcome)
+	}
+}
+
+func TestCausalExecutionIncludesOperationIdentity(t *testing.T) {
+	plan := crossSemanticTestPlan(t)
+	_, source, err := experiment.ExecuteCausalSourcePlan(plan, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, report, tape, err := ExecuteCausalPlan(plan, source)
+	if err != nil || outcome.Status == artifact.OutcomeError || report.Schema != semanticplan.CausalReplaySchema {
+		t.Fatalf("causal execution = %#v, %#v, %v", outcome, report, err)
+	}
+	found := false
+	for _, entry := range tape.Entries {
+		if entry.Choice.Kind != decision.NetworkLoss {
+			continue
+		}
+		var context struct {
+			OperationIDs []string `json:"operation_ids"`
+		}
+		if err := json.Unmarshal(entry.Choice.Context, &context); err != nil {
+			t.Fatal(err)
+		}
+		if len(context.OperationIDs) > 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("causal tape omitted operation identity")
+	}
+	replay, err := decision.NewCausalTapeDecider(tape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := ExecuteWithApplication(plan.Scenario, plan.Configuration, replay, plan.Application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if !artifact.OutcomesEqual(outcome, replayed) {
+		t.Fatalf("causal local replay changed outcome: got %#v want %#v", replayed, outcome)
+	}
+}
+
+func TestCausalExecutionProjectsReferenceSource(t *testing.T) {
+	plan := crossSemanticTestPlan(t)
+	_, sourceTape, err := experiment.ExecuteCausalSourcePlan(plan, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceDirectives, err := semanticplan.CausalDirectivesFromTape(sourceTape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sourceDirectives) == 0 {
+		t.Fatal("causal source produced no operation directives")
+	}
+	outcome, report, targetTape, err := ExecuteCausalPlan(plan, sourceTape)
+	if err != nil || outcome.Status == artifact.OutcomeError {
+		t.Fatalf("causal projection = %#v, %#v, %v", outcome, report, err)
+	}
+	if report.Directives != len(sourceDirectives) || report.Projected == 0 || report.Fidelity == semanticplan.ProjectionFailed {
+		t.Fatalf("causal report = %#v, directives=%#v", report, sourceDirectives)
+	}
+	replay, err := decision.NewCausalTapeDecider(targetTape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := ExecuteWithApplication(plan.Scenario, plan.Configuration, replay, plan.Application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if !artifact.OutcomesEqual(outcome, replayed) {
+		t.Fatalf("causal projected replay changed outcome: got %#v want %#v", replayed, outcome)
 	}
 }
 

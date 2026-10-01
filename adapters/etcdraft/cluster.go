@@ -584,9 +584,14 @@ func (c *Cluster) send(process *process, source *pb.Message) error {
 		return fmt.Errorf("%w: numeric target %d", ErrUnknownNode, source.GetTo())
 	}
 	process.sendSequence++
+	var ids []string
+	if includeOperationIDs(c.config.Decider) {
+		ids = operationIDs(source.GetEntries())
+	}
 	_, err := c.router.Send(sim.NodeID(process.name), sim.NodeID(to), envelope{
 		SenderIncarnation: process.incarnation, SendSequence: process.sendSequence,
-		From: process.name, To: to, Message: source,
+		OperationIDs: ids,
+		From:         process.name, To: to, Message: source,
 	})
 	return err
 }

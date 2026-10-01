@@ -107,6 +107,12 @@ successful replay means the target adapter consumed the semantic tape and
 reproduced the recorded outcome; a rejected semantic context is useful drift
 evidence rather than a replay failure hidden by best-effort defaults.
 
+The opt-in causal prototype uses `d-raft.causal-replay/v1` reports and
+`d-raft.causal-evidence/v1` envelopes. Causal markers and operation IDs are
+intentionally absent from ordinary decision contexts; changing either causal
+schema or its identity policy requires a new version and a fresh evidence
+bundle.
+
 Run-header seeds are canonical decimal strings. Decision-v1 option weights,
 ranges, selections, and Raft message integers remain JSON numbers for
 compatibility with the published schema; consumers must use lossless integer

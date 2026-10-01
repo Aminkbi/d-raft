@@ -56,10 +56,12 @@ type Config struct {
 type Envelope struct {
 	SenderIncarnation uint64       `json:"sender_incarnation"`
 	SendSequence      uint64       `json:"send_sequence"`
+	OperationIDs      []string     `json:"operation_ids,omitempty"`
 	Message           raft.Message `json:"message"`
 }
 
 func cloneEnvelope(envelope Envelope) Envelope {
+	envelope.OperationIDs = slices.Clone(envelope.OperationIDs)
 	envelope.Message = raft.CloneMessage(envelope.Message)
 	return envelope
 }
@@ -920,7 +922,16 @@ func (c *Cluster) processEffects(id raft.NodeID, effects []raft.Effect) error {
 		case raft.EffectSend:
 			process.sendSequence++
 			message := effect.Message
-			envelope := Envelope{SenderIncarnation: process.incarnation, SendSequence: process.sendSequence, Message: message}
+			var ids []string
+			if includeOperationIDs(c.config.Decider) {
+				ids = operationIDs(message.Entries)
+			}
+			envelope := Envelope{
+				SenderIncarnation: process.incarnation,
+				SendSequence:      process.sendSequence,
+				OperationIDs:      ids,
+				Message:           message,
+			}
 			if _, err := c.router.Send(sim.NodeID(id), sim.NodeID(message.To), envelope); err != nil {
 				return err
 			}
@@ -1246,14 +1257,16 @@ type networkDecisionContext struct {
 	To                sim.NodeID   `json:"to"`
 	SenderIncarnation uint64       `json:"sender_incarnation"`
 	SendSequence      uint64       `json:"send_sequence"`
+	Causal            bool         `json:"causal,omitempty"`
+	OperationIDs      []string     `json:"operation_ids,omitempty"`
 	Message           raft.Message `json:"message"`
 	MinLatencyNS      int64        `json:"min_latency_ns"`
 	MaxLatencyNS      int64        `json:"max_latency_ns"`
 	LossProbability   float64      `json:"loss_probability"`
 }
 
-func semanticNetworkContext(packet sim.Packet[Envelope], link sim.LinkConfig) networkDecisionContext {
-	return networkDecisionContext{
+func semanticNetworkContext(packet sim.Packet[Envelope], link sim.LinkConfig, includeOperationIDs bool) networkDecisionContext {
+	context := networkDecisionContext{
 		From: packet.From, To: packet.To,
 		SenderIncarnation: packet.Message.SenderIncarnation,
 		SendSequence:      packet.Message.SendSequence,
@@ -1261,11 +1274,43 @@ func semanticNetworkContext(packet sim.Packet[Envelope], link sim.LinkConfig) ne
 		MinLatencyNS:      int64(link.MinLatency), MaxLatencyNS: int64(link.MaxLatency),
 		LossProbability: link.LossProbability,
 	}
+	if includeOperationIDs {
+		context.Causal = true
+		context.OperationIDs = slices.Clone(packet.Message.OperationIDs)
+		if len(context.OperationIDs) == 0 {
+			context.OperationIDs = operationIDs(packet.Message.Message.Entries)
+		}
+	}
+	return context
+}
+
+// operationIDs gives every replicated entry a stable identity. Portable
+// application commands use their globally unique command ID; protocol-only
+// entries use their term/index identity so adapter-boundary defects can still
+// describe a causal batch without pretending the ID is portable across terms.
+func operationIDs(entries []raft.Entry) []string {
+	seen := make(map[string]struct{}, len(entries))
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		id := fmt.Sprintf("raft-entry/%d/%d", entry.Term, entry.Index)
+		if entry.Type == raft.EntryCommand {
+			if command, err := apporacle.DecodeCommand(entry.Data); err == nil {
+				id = command.ID.String()
+			}
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func (d raftNetworkDecisions) Drop(packet sim.Packet[Envelope], link sim.LinkConfig) (bool, error) {
 	options := lossOptions(link.LossProbability)
-	context, err := json.Marshal(semanticNetworkContext(packet, link))
+	context, err := json.Marshal(semanticNetworkContext(packet, link, includeOperationIDs(d.decider)))
 	if err != nil {
 		return false, err
 	}
@@ -1287,7 +1332,7 @@ func (d raftNetworkDecisions) Drop(packet sim.Packet[Envelope], link sim.LinkCon
 
 func (d raftNetworkDecisions) Latency(packet sim.Packet[Envelope], link sim.LinkConfig) (time.Duration, error) {
 	minimum, maximum := int64(link.MinLatency), int64(link.MaxLatency)
-	context, err := json.Marshal(semanticNetworkContext(packet, link))
+	context, err := json.Marshal(semanticNetworkContext(packet, link, includeOperationIDs(d.decider)))
 	if err != nil {
 		return 0, err
 	}
@@ -1306,6 +1351,11 @@ func (d raftNetworkDecisions) Latency(packet sim.Packet[Envelope], link sim.Link
 		return 0, fmt.Errorf("raftsim: network latency choice: %w", err)
 	}
 	return time.Duration(*selection.Number), nil
+}
+
+func includeOperationIDs(decider decision.Decider) bool {
+	aware, ok := decider.(decision.OperationContextDecider)
+	return ok && aware.IncludeOperationIDs()
 }
 
 func lossOptions(probability float64) []decision.Option {

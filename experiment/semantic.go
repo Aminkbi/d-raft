@@ -87,3 +87,63 @@ func ExecuteSemanticPlan(plan semanticplan.Plan) (semanticplan.SemanticExecution
 		plan, capabilities, reproducibility, projector.Finish(), recorder.Tape(), &outcome, "", nodes,
 	)
 }
+
+// ExecuteCausalPlan runs an operation-level loss projection with causal
+// network contexts enabled. The returned tape is local exact evidence and the
+// report keeps causal coverage separate from occurrence coverage.
+func ExecuteCausalPlan(plan semanticplan.Plan, source decision.Tape) (artifact.Outcome, semanticplan.CausalProjectionReport, decision.Tape, error) {
+	capabilities := ReferenceSemanticCapabilities()
+	eligibility, err := semanticplan.Preflight(plan, capabilities, capabilities)
+	if err != nil {
+		return artifact.Outcome{}, semanticplan.CausalProjectionReport{}, decision.Tape{}, err
+	}
+	if !eligibility.Eligible {
+		return artifact.Outcome{}, semanticplan.CausalProjectionReport{}, decision.Tape{}, fmt.Errorf("%w: %v", ErrSemanticIneligible, eligibility.Rejections)
+	}
+	directives, err := semanticplan.CausalDirectivesFromTape(source)
+	if err != nil {
+		return artifact.Outcome{}, semanticplan.CausalProjectionReport{}, decision.Tape{}, err
+	}
+	projector, err := semanticplan.NewCausalProjector(directives, plan.FallbackSeed)
+	if err != nil {
+		return artifact.Outcome{}, semanticplan.CausalProjectionReport{}, decision.Tape{}, err
+	}
+	recorder := decision.NewRecorder(projector)
+	config := plan.Configuration.ClusterConfig(recorder, nil)
+	application := plan.Application
+	config.Application = &application
+	cluster, err := raftsim.New(config)
+	if err != nil {
+		return artifact.Outcome{}, projector.Finish(), recorder.Tape(), err
+	}
+	outcome, err := executeScheduledApplication(cluster, plan.Scenario)
+	return outcome, projector.Finish(), recorder.Tape(), err
+}
+
+// ExecuteCausalSourcePlan produces the causal source evidence consumed by
+// ExecuteCausalPlan. The explicit causal seed decider makes operation IDs part
+// of the source context; callers must retain this tape alongside the source
+// outcome when comparing an independent adapter.
+func ExecuteCausalSourcePlan(plan semanticplan.Plan, seed artifact.Uint64) (artifact.Outcome, decision.Tape, error) {
+	capabilities := ReferenceSemanticCapabilities()
+	eligibility, err := semanticplan.Preflight(plan, capabilities, capabilities)
+	if err != nil {
+		return artifact.Outcome{}, decision.Tape{}, err
+	}
+	if !eligibility.Eligible {
+		return artifact.Outcome{}, decision.Tape{}, fmt.Errorf("%w: %v", ErrSemanticIneligible, eligibility.Rejections)
+	}
+	recorder := decision.NewRecorder(decision.NewCausalSeedDecider(uint64(seed)))
+	config := plan.Configuration.ClusterConfig(recorder, nil)
+	application := plan.Application
+	config.Application = &application
+	cluster, err := raftsim.New(config)
+	if err != nil {
+		return artifact.Outcome{}, recorder.Tape(), err
+	}
+	outcome, err := executeScheduledApplication(cluster, plan.Scenario)
+	if recorder.Err() != nil && err == nil {
+		err = recorder.Err()
+	}
+	return outcome, recorder.Tape(), err
+}

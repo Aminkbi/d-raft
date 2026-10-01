@@ -80,6 +80,12 @@ type Decider interface {
 	Choose(Choice) (Selection, error)
 }
 
+// OperationContextDecider opts a decision source into causal operation IDs in
+// network choice contexts. Ordinary replay leaves this disabled.
+type OperationContextDecider interface {
+	IncludeOperationIDs() bool
+}
+
 // SeedDecider makes stable weighted and ranged selections.
 type SeedDecider struct {
 	random *sim.Rand
@@ -89,6 +95,23 @@ type SeedDecider struct {
 func NewSeedDecider(seed uint64) *SeedDecider {
 	return &SeedDecider{random: sim.NewRand(seed)}
 }
+
+// CausalSeedDecider is the seeded source decider for causal replay. It makes
+// the opt-in operation identity request explicit at the point where a source
+// tape is produced; an ordinary SeedDecider retains the historical context
+// shape.
+type CausalSeedDecider struct {
+	*SeedDecider
+}
+
+// NewCausalSeedDecider returns a deterministic decider that asks adapters to
+// include operation identities in network choice contexts.
+func NewCausalSeedDecider(seed uint64) *CausalSeedDecider {
+	return &CausalSeedDecider{SeedDecider: NewSeedDecider(seed)}
+}
+
+// IncludeOperationIDs opts a recording source run into causal contexts.
+func (*CausalSeedDecider) IncludeOperationIDs() bool { return true }
 
 // Choose implements Decider.
 func (d *SeedDecider) Choose(choice Choice) (Selection, error) {
@@ -196,14 +219,30 @@ func (r *Recorder) Err() error {
 	return r.err
 }
 
+func (r *Recorder) IncludeOperationIDs() bool {
+	aware, ok := r.base.(OperationContextDecider)
+	return ok && aware.IncludeOperationIDs()
+}
+
 // TapeDecider replays and validates an exact semantic tape.
 type TapeDecider struct {
-	tape  Tape
-	index int
+	tape                Tape
+	index               int
+	includeOperationIDs bool
 }
 
 // NewTapeDecider validates tape metadata and returns a replay decider.
 func NewTapeDecider(tape Tape) (*TapeDecider, error) {
+	return newTapeDecider(tape, false)
+}
+
+// NewCausalTapeDecider replays a tape whose network contexts include the
+// operation identities required by operation-level causal projection.
+func NewCausalTapeDecider(tape Tape) (*TapeDecider, error) {
+	return newTapeDecider(tape, true)
+}
+
+func newTapeDecider(tape Tape, includeOperationIDs bool) (*TapeDecider, error) {
 	if tape.Schema != SchemaVersion {
 		return nil, fmt.Errorf("%w: schema %q", ErrTapeMismatch, tape.Schema)
 	}
@@ -219,8 +258,12 @@ func NewTapeDecider(tape Tape) (*TapeDecider, error) {
 			return nil, fmt.Errorf("%w at choice %d: invalid stored selection: %v", ErrTapeMismatch, index, err)
 		}
 	}
-	return &TapeDecider{tape: cloneTape(tape)}, nil
+	return &TapeDecider{tape: cloneTape(tape), includeOperationIDs: includeOperationIDs}, nil
 }
+
+// IncludeOperationIDs reports whether replay should request causal operation
+// identities in adapter network contexts.
+func (d *TapeDecider) IncludeOperationIDs() bool { return d != nil && d.includeOperationIDs }
 
 // Choose implements Decider and rejects the first identity, kind, domain, or
 // selection mismatch.

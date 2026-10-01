@@ -12,6 +12,7 @@ identities and records where the target execution diverges from that projection.
 | Semantic plan | `d-raft.semantic-plan/v1` | Workload, convergence boundary, source provenance, portable directives, and fallback seed |
 | Adapter capabilities | `d-raft.adapter-capabilities/v1` | Canonical declaration of supported workload, application, projection, membership, and invariant profiles |
 | Semantic execution | `d-raft.semantic-execution/v1` | Build provenance, adapter-local tape evidence, projection accounting, raw outcome, and portable application commitments |
+| Causal replay evidence | `d-raft.causal-evidence/v1` | Strict plan/adapter provenance, source/target causal tapes, outcomes, fallback seed, and verified causal projection report |
 | Normalized outcome | `d-raft.normalized-outcome/v1` | Adapter-neutral execution, safety, and application evidence |
 | Normalized comparison | `d-raft.normalized-comparison/v1` | Pairwise eligibility, projection, completion, common-invariant, and application axes |
 | Cross bundle manifest | `d-raft.cross-bundle/v1` | Exact-byte hashes and sizes for one committed seven-document result set |
@@ -175,3 +176,31 @@ decisions, forged derived fields, and any manifest or document tampering fail
 closed. A failed projection is checked by consuming its exact successful tape
 prefix, requiring exhaustion at the next unrecorded choice, and matching a
 fresh deterministic failed semantic execution.
+
+## Causal replay prototype
+
+The operation-level prototype is a separate, opt-in path. Produce the source
+tape with `decision.NewCausalSeedDecider` (wrapped by
+`decision.NewRecorder`), project it with `experiment.ExecuteCausalPlan` or
+`adapters/etcdraft.ExecuteCausalPlan`, and validate the returned
+`d-raft.causal-replay/v1` report before storing it in a
+`d-raft.causal-evidence/v1` envelope. Replaying that target-local tape requires
+`decision.NewCausalTapeDecider`; an ordinary v1 tape is not a causal source
+merely because it can be decoded.
+
+Each network context carries sorted operation IDs only in this mode. Portable
+KV commands use their globally unique command ID. Protocol-only log entries
+use a namespaced term/index identity for adapter-boundary evidence; those IDs
+are not advertised as cross-version portable commands. A directive applies to
+all attempts carrying its operation ID. Unknown target operations are
+delivered when the loss domain permits it, fixed one-option domains retain
+their only legal selection, and a known drop mixed with an unknown operation
+or with a conflicting directive is rejected before execution. The report keeps
+directive coverage, additional target choices, unmatched source operations,
+and failed projection separate from exact local replay evidence.
+
+`defects/etcd-raft-pr31/` is a pinned upstream interaction fixture verified by
+the external runner in `tools/replay-etcdraft-defect.sh`. Its vulnerable panic
+and fixed boundary are production-core evidence; the fixture's compaction and
+`MsgApp` scheduling are outside the portable semantic-plan capability set, so
+the runner is not presented as an application-level causal plan execution.

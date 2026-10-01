@@ -8,6 +8,13 @@ All notable changes to d-raft are documented here. The project follows
 
 ### Added
 
+- Opt-in causal replay contexts with stable portable KV and namespaced log-entry
+  operation IDs, an explicit causal source-tape path, strict projection
+  reports, an operation-level projector that rejects conflicting indivisible
+  batches, strict `d-raft.causal-evidence/v1` envelopes, and exact causal
+  local-tape replay support.
+- A pinned etcd/raft PR #31 production-defect manifest, upstream regression
+  fixture, and vulnerable/fixed replay runner.
 - Fully enumerated reference cache-parity checks across election, persistence,
   snapshot, crash/restart, and membership boundaries; a divergent-future
   field-omission control and a violation-preserving equivalent-state merge test.

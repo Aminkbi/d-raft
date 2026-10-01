@@ -22,9 +22,11 @@ The project is created and maintained by
 > commitments and semantic projection with explicit capability/accounting
 > boundaries. Published evidence includes a [six-fault mutant corpus](MUTANTS.md),
 > [cross-adapter cases](corpus/cross-adapter/v1/), a [21-trial bounded study](EVALUATION.md),
-> and a [synthetic projection study](PROJECTION_STUDY.md). Production-defect
-> effectiveness, comparative reduction benefit, and diagnosis time remain
-> unmeasured; see [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md).
+> and a [synthetic projection study](PROJECTION_STUDY.md). One pinned
+> etcd/raft production defect now has vulnerable/fixed replay evidence;
+> production-defect effectiveness across a case set, comparative reduction
+> benefit, and diagnosis time remain unmeasured; see
+> [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md).
 
 ## Why d-raft?
 
@@ -50,6 +52,9 @@ questions and baselines. The executable [projection study](PROJECTION_STUDY.md)
 already demonstrates a limitation: exact occurrence coverage can move faults
 to different logical operations. Its causal prototype and results are
 synthetic development evidence, not production-defect effectiveness results.
+The pinned etcd/raft PR #31 interaction is separately replayed against its
+vulnerable and fixed revisions as an adapter-boundary defect gate; its
+compaction behavior is outside the portable semantic-plan capability set.
 
 ## What works today
 
@@ -59,11 +64,12 @@ synthetic development evidence, not production-defect effectiveness results.
 | `raft` | Pure deterministic Raft reference state machine with elections, replication, current-term commit, snapshots, compaction, joint consensus, learners, and leader no-op entries |
 | `raftsim` | Durable storage, timers, network delivery, partitions, crash/restart, snapshot installation, membership actions, process incarnations, and persistence barriers |
 | `check` | Package-separated election, voting, term, log, commit, apply, snapshot, and membership-transition witnesses with stable fingerprints |
-| `decision` | Versioned semantic choices, seeded selection, recording, exact tape replay, and domain-drift detection |
+| `decision` | Versioned semantic choices, ordinary and opt-in causal seeded selection, recording, exact tape replay, and domain-drift detection |
 | `trace` | Bounded, line-aware, payload-lossless decoder for known `d-raft.trace/v1` fields |
 | `artifact` | Strict, self-describing `d-raft.run/v3` artifacts with scenarios, voter/learner roles, configuration actions, environment, tape, outcome, digest, and witnesses; legacy v1/v2 decoding remains available |
 | `apporacle` | Strict binary KV commands, canonical checkpoints, known-answer vectors, and adapter-neutral state/history commitments |
-| `semanticplan` | Strict portable plan/capability/execution schemas, plan-aware projection proof checks, negotiated invariant universes, normalized outcomes, and outcome-bound comparisons |
+| `semanticplan` | Strict portable plan/capability/execution schemas, occurrence and opt-in causal projection accounting, negotiated invariant universes, normalized outcomes, and outcome-bound comparisons |
+| `defect` | Strict manifests for pinned upstream defects and reviewed vulnerable/fixed replay predicates |
 | `experiment` | Clean-run execution of versioned and named canonical scenarios with proposal, snapshot, membership, process, and network actions |
 | `evaluation` | Strict balanced-trial evaluator with raw accounting, paired cache contrasts, machine/build provenance, and publication validation |
 | `cmd/draft` | `run`, `canonical`, `explore`, `replay`, `minimize`, and `inspect` research workflow |

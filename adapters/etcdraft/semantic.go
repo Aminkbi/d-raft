@@ -90,3 +90,38 @@ func ExecuteSemanticPlan(plan semanticplan.Plan) (semanticplan.SemanticExecution
 		plan, capabilities, reproducibility, projector.Finish(), recorder.Tape(), &outcome, "", nodes,
 	)
 }
+
+// ExecuteCausalPlan runs an operation-level loss projection with causal
+// network contexts enabled. It is experimental and keeps target-local replay
+// evidence separate from occurrence-based semantic-plan evidence.
+func ExecuteCausalPlan(plan semanticplan.Plan, source decision.Tape) (artifact.Outcome, semanticplan.CausalProjectionReport, decision.Tape, error) {
+	capabilities := SemanticCapabilities()
+	eligibility, err := semanticplan.Preflight(plan, experiment.ReferenceSemanticCapabilities(), capabilities)
+	if err != nil {
+		return artifact.Outcome{}, semanticplan.CausalProjectionReport{}, decision.Tape{}, err
+	}
+	if !eligibility.Eligible {
+		return artifact.Outcome{}, semanticplan.CausalProjectionReport{}, decision.Tape{}, fmt.Errorf("%w: %v", ErrSemanticIneligible, eligibility.Rejections)
+	}
+	directives, err := semanticplan.CausalDirectivesFromTape(source)
+	if err != nil {
+		return artifact.Outcome{}, semanticplan.CausalProjectionReport{}, decision.Tape{}, err
+	}
+	projector, err := semanticplan.NewCausalProjector(directives, plan.FallbackSeed)
+	if err != nil {
+		return artifact.Outcome{}, semanticplan.CausalProjectionReport{}, decision.Tape{}, err
+	}
+	recorder := decision.NewRecorder(projector)
+	config, err := ConfigurationFrom(plan.Configuration, recorder)
+	if err != nil {
+		return artifact.Outcome{}, projector.Finish(), recorder.Tape(), err
+	}
+	application := plan.Application
+	config.Application = &application
+	cluster, err := New(config)
+	if err != nil {
+		return artifact.Outcome{}, projector.Finish(), recorder.Tape(), err
+	}
+	outcome, err := executeScheduled(cluster, plan.Scenario)
+	return outcome, projector.Finish(), recorder.Tape(), err
+}
